@@ -5,12 +5,15 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from datetime import datetime, timedelta
+import logging
 from .models import User, Session, Activity, ApplicationUsageStats
 from .serializers import (
     UserSerializer, SessionSerializer, ActivitySerializer,
     SessionWithActivitiesSerializer, ApplicationUsageStatsSerializer,
     BulkDataUploadSerializer
 )
+
+logger = logging.getLogger(__name__)
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -105,14 +108,19 @@ def upload_tracking_data(request):
         ]
     }
     """
+    logger.info(f"Received tracking data upload request from {request.META.get('REMOTE_ADDR')}")
+
     serializer = BulkDataUploadSerializer(data=request.data)
 
     if not serializer.is_valid():
+        logger.error(f"Invalid data in upload request: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     data = serializer.validated_data
     user_id = data.get('user_id')
     metric_token = data.get('metric_token')
+
+    logger.info(f"Processing upload for user_id={user_id}, metric_token={metric_token}, activities={len(data.get('activities', []))}")
 
     # Either user_id or metric_token must be provided
     if not user_id and not metric_token:
@@ -166,7 +174,17 @@ def upload_tracking_data(request):
 
     # Create activities
     activities_created = []
+    total_activity_duration = 0
+
     for activity_data in data.get('activities', []):
+        # Calculate duration if not provided
+        duration = activity_data.get('duration', 0)
+        if duration == 0 and activity_data.get('end_time'):
+            # Calculate duration from start and end times
+            start = activity_data['start_time']
+            end = activity_data['end_time']
+            duration = int((end - start).total_seconds())
+
         activity = Activity.objects.create(
             session=session,
             metric_token=metric_token if not user else None,
@@ -176,28 +194,45 @@ def upload_tracking_data(request):
             details=activity_data.get('details', ''),
             start_time=activity_data['start_time'],
             end_time=activity_data.get('end_time'),
-            duration=activity_data.get('duration', 0)
+            duration=duration
         )
         activities_created.append(activity.id)
+        total_activity_duration += duration
 
-    # Calculate session duration
+    # Calculate and update session duration
     if session.end_time:
+        # Use actual session time span
         duration = (session.end_time - session.start_time).total_seconds()
         session.total_duration = int(duration)
-        session.save()
+    elif total_activity_duration > 0:
+        # If session is still active, use sum of activity durations
+        session.total_duration = max(session.total_duration, total_activity_duration)
+
+    session.save()
+
+    # Log successful upload
+    logger.info(f"Successfully created {len(activities_created)} activities for session {session.id}")
+    logger.info(f"Session total duration: {session.total_duration} seconds ({session.total_duration/60:.1f} minutes)")
 
     response_data = {
         'status': 'success',
         'session_id': session.id,
+        'session_created': session_created,
         'activities_created': len(activities_created),
+        'total_duration_seconds': session.total_duration,
+        'total_duration_minutes': round(session.total_duration / 60, 2),
+        'session_is_active': session.is_active,
     }
 
     if user:
         response_data['user_id'] = user.id
-        response_data['message'] = f'Successfully uploaded data for {user.employee_id}'
+        response_data['employee_id'] = user.employee_id
+        response_data['message'] = f'Successfully uploaded {len(activities_created)} activities for {user.employee_id}'
+        logger.info(f"Upload for user: {user.employee_id}")
     else:
         response_data['metric_token'] = metric_token
-        response_data['message'] = f'Successfully uploaded data for metric token'
+        response_data['message'] = f'Successfully uploaded {len(activities_created)} activities for metric token'
+        logger.info(f"Upload for metric token: {metric_token[:8]}...")
 
     return Response(response_data, status=status.HTTP_201_CREATED)
 
@@ -320,6 +355,8 @@ def merge_metric_token(request):
     metric_activities = Activity.objects.filter(metric_token=metric_token)
     activities_updated = metric_activities.count()
 
+    logger.info(f"Merging {sessions_updated} sessions and {activities_updated} activities from token {metric_token[:8]}... to user {user.employee_id}")
+
     # Transfer sessions to user
     metric_sessions.update(user=user, metric_token=None)
 
@@ -336,3 +373,35 @@ def merge_metric_token(request):
         'user_id': user.id,
         'employee_id': user.employee_id
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def recent_activities(request):
+    """
+    Get recent activities for debugging
+    Query params:
+    - limit: number of activities to return (default: 50)
+    - user_id: filter by user employee_id
+    - metric_token: filter by metric token
+    - process: filter by process name
+    """
+    limit = int(request.query_params.get('limit', 50))
+    user_id = request.query_params.get('user_id')
+    metric_token = request.query_params.get('metric_token')
+    process = request.query_params.get('process')
+
+    activities = Activity.objects.all()
+
+    if user_id:
+        activities = activities.filter(session__user__employee_id=user_id)
+    if metric_token:
+        activities = activities.filter(metric_token=metric_token)
+    if process:
+        activities = activities.filter(process_name__icontains=process)
+
+    activities = activities.order_by('-start_time')[:limit]
+
+    return Response({
+        'count': activities.count(),
+        'activities': ActivitySerializer(activities, many=True).data
+    })

@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from .views import (
     UserViewSet, SessionViewSet, ActivityViewSet,
     upload_tracking_data, dashboard_stats, user_activity_report,
-    merge_metric_token
+    merge_metric_token, recent_activities
 )
 from .auth_views import (
     login_view, set_password_view, invite_staff_view,
@@ -51,4 +51,5 @@ urlpatterns = [
     path('merge-token/', merge_metric_token, name='merge-metric-token'),
     path('dashboard/', dashboard_stats, name='dashboard-stats'),
     path('users/<int:user_id>/report/', user_activity_report, name='user-report'),
+    path('activities/recent/', recent_activities, name='recent-activities'),
 ]
