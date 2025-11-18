@@ -59,7 +59,8 @@ def login_view(request):
             return Response({
                 'success': True,
                 'first_login': True,
-                'message': 'OTP verified. Please set a new password.',
+                'token': '',  # No token for first-time login
+                'message': 'OTP verified. This is your first-time login. Please set a new password.',
                 'user': {
                     'id': user.id,
                     'employee_id': user.employee_id,
@@ -84,6 +85,7 @@ def login_view(request):
             'success': True,
             'first_login': False,
             'token': token.key,
+            'message': 'Login successful',
             'user': {
                 'id': user.id,
                 'employee_id': user.employee_id,
@@ -160,6 +162,7 @@ def set_password_view(request):
 
     return Response({
         'success': True,
+        'first_login': False,
         'message': 'Password set successfully. You can now login.',
         'token': token.key,
         'user': {
@@ -168,6 +171,9 @@ def set_password_view(request):
             'email': user.email,
             'full_name': user.full_name,
             'role': user.role,
+            'is_admin': user.is_admin_user(),
+            'department': user.department,
+            'position': user.position,
         }
     })
 
@@ -176,15 +182,17 @@ def set_password_view(request):
 @permission_classes([IsAuthenticated])
 def invite_staff_view(request):
     """
-    Admin-only: Invite new staff member (Simplified version)
+    Admin/Manager: Invite new staff member
+    - Admin can create MANAGER or EMPLOYEE
+    - Manager can create only EMPLOYEE
 
     POST /api/admin/invite-staff/
     """
-    # Check if user is admin
-    if not request.user.is_admin_user():
+    # Check if user is admin or manager
+    if not (request.user.is_admin_user() or request.user.is_manager_user()):
         return Response({
             'success': False,
-            'error': 'Only administrators can invite staff members'
+            'error': 'Only administrators and managers can invite staff members'
         }, status=status.HTTP_403_FORBIDDEN)
 
     # Get data from request
@@ -194,6 +202,19 @@ def invite_staff_view(request):
     department = request.data.get('department', '')
     position = request.data.get('position', '')
     role = request.data.get('role', User.EMPLOYEE)
+
+    # Role-based validation
+    if request.user.is_manager_user() and role != User.EMPLOYEE:
+        return Response({
+            'success': False,
+            'error': 'Managers can only create Employee accounts'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    if request.user.is_admin_user() and role == User.ADMIN:
+        return Response({
+            'success': False,
+            'error': 'Cannot create Admin accounts through this endpoint'
+        }, status=status.HTTP_403_FORBIDDEN)
 
     # Validation
     if not all([email, full_name, employee_id]):
@@ -353,16 +374,16 @@ def current_user_view(request):
     """Get current logged-in user details"""
     user = request.user
     return Response({
-        'success': True,
-        'user': {
-            'id': user.id,
-            'employee_id': user.employee_id,
-            'email': user.email,
-            'full_name': user.full_name,
-            'role': user.role,
-            'is_admin': user.is_admin_user(),
-            'department': user.department,
-            'position': user.position,
-            'last_login': user.last_login,
-        }
+        'id': user.id,
+        'username': user.username,
+        'employee_id': user.employee_id,
+        'email': user.email,
+        'full_name': user.full_name,
+        'role': user.role,
+        'is_admin': user.is_admin_user(),
+        'department': user.department,
+        'position': user.position,
+        'computer_name': user.computer_name,
+        'last_login': user.last_login,
+        'date_joined': user.date_joined,
     })

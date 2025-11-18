@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'drf_spectacular',
     'tracker_api',
+    'front_api',
 ]
 
 MIDDLEWARE = [
@@ -145,8 +146,17 @@ AUTH_USER_MODEL = 'tracker_api.User'
 CORS_ALLOW_ALL_ORIGINS = True  # For development only
 CORS_ALLOW_CREDENTIALS = True
 
+# CSRF settings - Exempt API endpoints for development
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000').split(',')
+# For API-only endpoints, you might want to exempt them from CSRF
+# This is handled by DRF's authentication classes (TokenAuthentication is CSRF-exempt)
+
 # REST Framework settings
 REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',  # For development
     ],

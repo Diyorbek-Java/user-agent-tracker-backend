@@ -5,6 +5,58 @@ import secrets
 import string
 
 
+class Department(models.Model):
+    """
+    Department/Team model
+    Examples: Sales, Engineering, HR, Marketing, Finance, etc.
+    """
+    name = models.CharField(max_length=100, unique=True, db_index=True)
+    description = models.TextField(blank=True, null=True, help_text="Department description and responsibilities")
+    head_of_department = models.ForeignKey(
+        'User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='departments_headed',
+        help_text="Manager/Head of this department"
+    )
+    is_active = models.BooleanField(default=True, help_text="Is this department currently active?")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name_plural = 'Departments'
+
+    def __str__(self):
+        return self.name
+
+
+class JobPosition(models.Model):
+    """
+    Job Position/Title model
+    Examples: Senior Developer, Sales Manager, HR Coordinator, etc.
+    """
+    title = models.CharField(max_length=100, unique=True, db_index=True)
+    description = models.TextField(blank=True, null=True, help_text="Position description and responsibilities")
+    level = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        help_text="Job level (Junior, Mid, Senior, Lead, Manager, etc.)"
+    )
+    is_active = models.BooleanField(default=True, help_text="Is this position currently available?")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['title']
+        verbose_name_plural = 'Job Positions'
+
+    def __str__(self):
+        return self.title
+
+
 class User(AbstractUser):
     """Custom User model combining authentication and employee information"""
 
@@ -23,8 +75,22 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=EMPLOYEE)
     employee_id = models.CharField(max_length=100, unique=True, db_index=True, help_text="Unique employee identifier")
     full_name = models.CharField(max_length=200)
-    department = models.CharField(max_length=100, blank=True, null=True)
-    position = models.CharField(max_length=100, blank=True, null=True)
+    department = models.ForeignKey(
+        Department,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='employees',
+        help_text="Employee's department"
+    )
+    position = models.ForeignKey(
+        JobPosition,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='employees',
+        help_text="Employee's job position"
+    )
     computer_name = models.CharField(max_length=100, blank=True, null=True)
 
     # Invitation system
@@ -198,3 +264,120 @@ class ApplicationUsageStats(models.Model):
     def get_duration_hours(self):
         """Get usage duration in hours"""
         return round(self.total_duration / 3600, 2)
+
+
+class AppCategory(models.Model):
+    """
+    Application categorization for productivity tracking
+    Defines whether an application is productive, neutral, or non-productive
+    """
+    PRODUCTIVE = 'PRODUCTIVE'
+    NEUTRAL = 'NEUTRAL'
+    NON_PRODUCTIVE = 'NON_PRODUCTIVE'
+
+    CATEGORY_CHOICES = [
+        (PRODUCTIVE, 'Productive'),
+        (NEUTRAL, 'Neutral'),
+        (NON_PRODUCTIVE, 'Non-Productive'),
+    ]
+
+    process_name = models.CharField(max_length=200, db_index=True, help_text="Application process name (e.g., chrome.exe)")
+    display_name = models.CharField(max_length=200, help_text="Human-readable name (e.g., Google Chrome)")
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default=NEUTRAL)
+    description = models.TextField(blank=True, null=True, help_text="Why this app is categorized this way")
+    is_global = models.BooleanField(default=True, help_text="Applies to all departments")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_app_categories')
+
+    class Meta:
+        ordering = ['display_name']
+        verbose_name_plural = 'App Categories'
+
+    def __str__(self):
+        return f"{self.display_name} ({self.category})"
+
+
+class DepartmentAppRule(models.Model):
+    """
+    Department-specific application categorization rules
+    Overrides global app categories for specific departments
+    Example: Telegram is productive for Sales but non-productive for Accounting
+    """
+    department = models.ForeignKey(
+        Department,
+        on_delete=models.CASCADE,
+        related_name='app_rules',
+        help_text="Department this rule applies to"
+    )
+    app_category = models.ForeignKey(AppCategory, on_delete=models.CASCADE, related_name='department_rules')
+    category_override = models.CharField(
+        max_length=20,
+        choices=AppCategory.CATEGORY_CHOICES,
+        help_text="Override category for this department"
+    )
+    reason = models.TextField(blank=True, null=True, help_text="Why this department has different rules")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_dept_rules')
+
+    class Meta:
+        unique_together = ['department', 'app_category']
+        ordering = ['department', 'app_category']
+        verbose_name_plural = 'Department App Rules'
+
+    def __str__(self):
+        return f"{self.department.name}: {self.app_category.display_name} -> {self.category_override}"
+
+
+class ManualTimeEntry(models.Model):
+    """
+    Manual time entry for non-computer activities
+    Allows employees to log meetings, calls, field work, etc.
+    """
+    MEETING = 'MEETING'
+    PHONE_CALL = 'PHONE_CALL'
+    FIELD_WORK = 'FIELD_WORK'
+    TRAINING = 'TRAINING'
+    BREAK = 'BREAK'
+    OTHER = 'OTHER'
+
+    ACTIVITY_TYPE_CHOICES = [
+        (MEETING, 'Meeting'),
+        (PHONE_CALL, 'Phone Call'),
+        (FIELD_WORK, 'Field Work'),
+        (TRAINING, 'Training'),
+        (BREAK, 'Break'),
+        (OTHER, 'Other'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='manual_time_entries')
+    activity_type = models.CharField(max_length=20, choices=ACTIVITY_TYPE_CHOICES)
+    description = models.TextField(help_text="Description of the activity")
+    start_time = models.DateTimeField(db_index=True)
+    end_time = models.DateTimeField()
+    duration_minutes = models.IntegerField(help_text="Duration in minutes")
+    is_productive = models.BooleanField(
+        default=True,
+        help_text="Whether this activity counts as productive time"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-start_time']
+        indexes = [
+            models.Index(fields=['user', '-start_time']),
+            models.Index(fields=['start_time']),
+        ]
+        verbose_name_plural = 'Manual Time Entries'
+
+    def __str__(self):
+        return f"{self.user.full_name}: {self.activity_type} - {self.duration_minutes}min"
+
+    def save(self, *args, **kwargs):
+        # Auto-calculate duration if not provided
+        if not self.duration_minutes and self.start_time and self.end_time:
+            delta = self.end_time - self.start_time
+            self.duration_minutes = int(delta.total_seconds() / 60)
+        super().save(*args, **kwargs)

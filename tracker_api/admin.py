@@ -1,6 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, Session, Activity, ApplicationUsageStats
+from .models import (
+    User, Session, Activity, ApplicationUsageStats,
+    AppCategory, DepartmentAppRule, ManualTimeEntry,
+    Department, JobPosition
+)
 
 
 @admin.register(User)
@@ -22,7 +26,7 @@ class UserAdmin(BaseUserAdmin):
             'fields': ('department', 'position', 'computer_name')
         }),
         ('Permissions', {
-            'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')
+            'fields': ('is_active', 'is_staff', 'is_superuser')
         }),
         ('Invitation & OTP', {
             'fields': ('is_invited', 'invitation_sent_at', 'otp', 'otp_created_at', 'otp_expires_at', 'otp_used'),
@@ -41,6 +45,34 @@ class UserAdmin(BaseUserAdmin):
     )
 
     readonly_fields = ['last_login', 'date_joined', 'updated_at', 'otp_created_at', 'otp_expires_at']
+
+
+@admin.register(Department)
+class DepartmentAdmin(admin.ModelAdmin):
+    """Department admin"""
+    list_display = ['name', 'head_of_department', 'is_active', 'get_employee_count', 'created_at']
+    list_filter = ['is_active', 'created_at']
+    search_fields = ['name', 'description', 'head_of_department__full_name']
+    ordering = ['name']
+    readonly_fields = ['created_at', 'updated_at']
+
+    def get_employee_count(self, obj):
+        return obj.employees.count()
+    get_employee_count.short_description = 'Employees'
+
+
+@admin.register(JobPosition)
+class JobPositionAdmin(admin.ModelAdmin):
+    """Job Position admin"""
+    list_display = ['title', 'level', 'is_active', 'get_employee_count', 'created_at']
+    list_filter = ['is_active', 'level', 'created_at']
+    search_fields = ['title', 'description', 'level']
+    ordering = ['title']
+    readonly_fields = ['created_at', 'updated_at']
+
+    def get_employee_count(self, obj):
+        return obj.employees.count()
+    get_employee_count.short_description = 'Employees'
 
 
 @admin.register(Session)
@@ -68,3 +100,31 @@ class ApplicationUsageStatsAdmin(admin.ModelAdmin):
     search_fields = ['user__username', 'user__employee_id', 'user__full_name', 'process_name']
     date_hierarchy = 'date'
     ordering = ['-date', '-total_duration']
+
+
+@admin.register(AppCategory)
+class AppCategoryAdmin(admin.ModelAdmin):
+    list_display = ['display_name', 'process_name', 'category', 'is_global', 'created_by', 'created_at']
+    list_filter = ['category', 'is_global', 'created_at']
+    search_fields = ['display_name', 'process_name', 'description']
+    ordering = ['display_name']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(DepartmentAppRule)
+class DepartmentAppRuleAdmin(admin.ModelAdmin):
+    list_display = ['department', 'app_category', 'category_override', 'created_by', 'created_at']
+    list_filter = ['department', 'category_override', 'created_at']
+    search_fields = ['department', 'app_category__display_name', 'reason']
+    ordering = ['department', 'app_category']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(ManualTimeEntry)
+class ManualTimeEntryAdmin(admin.ModelAdmin):
+    list_display = ['user', 'activity_type', 'start_time', 'end_time', 'duration_minutes', 'is_productive', 'created_at']
+    list_filter = ['activity_type', 'is_productive', 'start_time', 'user']
+    search_fields = ['user__username', 'user__full_name', 'description']
+    date_hierarchy = 'start_time'
+    ordering = ['-start_time']
+    readonly_fields = ['created_at', 'updated_at']
