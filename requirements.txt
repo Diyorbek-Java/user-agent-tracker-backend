@@ -13,6 +13,7 @@ dj-database-url==2.1.0
 
 # WSGI server for production
 gunicorn==23.0.0
+whitenoise==6.6.0
 
 # Email functionality
 django-email-verification==0.3.3
