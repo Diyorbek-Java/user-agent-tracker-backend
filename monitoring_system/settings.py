@@ -194,6 +194,10 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Logging configuration
+# Create logs directory if it doesn't exist (for local development)
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -212,15 +216,10 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
         },
-        'file': {
-            'class': 'logging.FileHandler',
-            'filename': BASE_DIR / 'logs' / 'tracker_api.log',
-            'formatter': 'verbose',
-        },
     },
     'loggers': {
         'tracker_api': {
-            'handlers': ['console', 'file'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
