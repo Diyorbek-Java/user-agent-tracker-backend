@@ -1,17 +1,20 @@
 from django.shortcuts import render
 from django.utils import timezone
 from django.db.models import Sum, Count, Q
+from django.db import IntegrityError
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from datetime import datetime, timedelta
 import logging
-from .models import User, Session, Activity, ApplicationUsageStats
+from .models import User, Session, Activity, ApplicationUsageStats, AppCategory
 from .serializers import (
     UserSerializer, SessionSerializer, ActivitySerializer,
     SessionWithActivitiesSerializer, ApplicationUsageStatsSerializer,
-    BulkDataUploadSerializer
+    BulkDataUploadSerializer, AppCategorySerializer, AppCategoryCreateSerializer
 )
+from .services import ProductivityService
+from django.utils.dateparse import parse_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -130,60 +133,90 @@ def upload_tracking_data(request):
 
     user = None
     if user_id:
-        # Get or create user
-        user, created = User.objects.get_or_create(
-            employee_id=user_id,
-            defaults={
-                'username': user_id,
-                'full_name': user_id,  # Default to user_id, can be updated later
-                'email': f"{user_id}@company.com",  # Placeholder email
-                'computer_name': data.get('computer_name', '')
-            }
-        )
+        # Get or create user - handle race condition with username/employee_id uniqueness
+        try:
+            user = User.objects.get(employee_id=user_id)
+        except User.DoesNotExist:
+            # Try to get by username as fallback (since we use user_id as username)
+            try:
+                user = User.objects.get(username=user_id)
+                # Update employee_id if it was missing or different
+                if not user.employee_id or user.employee_id != user_id:
+                    user.employee_id = user_id
+                    user.save(update_fields=['employee_id'])
+            except User.DoesNotExist:
+                # Create new user
+                try:
+                    user = User.objects.create(
+                        employee_id=user_id,
+                        username=user_id,
+                        full_name=user_id,  # Default to user_id, can be updated later
+                        email=f"{user_id}@company.com",  # Placeholder email
+                        computer_name=data.get('computer_name', '')
+                    )
+                except IntegrityError:
+                    # Race condition: another request created the user, fetch it
+                    user = User.objects.get(Q(employee_id=user_id) | Q(username=user_id))
 
-        if not created and data.get('computer_name'):
+        if data.get('computer_name') and user.computer_name != data.get('computer_name'):
             user.computer_name = data['computer_name']
-            user.save()
+            user.save(update_fields=['computer_name'])
 
-    # Create or update session
-    session_defaults = {
-        'end_time': data.get('session_end'),
-        'is_active': data.get('session_end') is None
-    }
+    # Helper function to get or create daily session for a specific date
+    def get_daily_session(activity_date, user_obj, metric_tok):
+        day_start = timezone.make_aware(datetime.combine(activity_date, datetime.min.time()))
+        day_end = timezone.make_aware(datetime.combine(activity_date, datetime.max.time()))
 
-    if user:
-        session, session_created = Session.objects.get_or_create(
-            user=user,
-            start_time=data['session_start'],
-            defaults=session_defaults
-        )
-    else:
-        # Metric token session
-        session, session_created = Session.objects.get_or_create(
-            metric_token=metric_token,
-            start_time=data['session_start'],
-            defaults=session_defaults
-        )
+        session_defaults = {
+            'end_time': day_end,
+            'is_active': True
+        }
 
-    if not session_created:
-        # Update existing session
-        if data.get('session_end'):
-            session.end_time = data['session_end']
-            session.is_active = False
-        session.save()
+        if user_obj:
+            sess, _ = Session.objects.get_or_create(
+                user=user_obj,
+                start_time=day_start,
+                defaults=session_defaults
+            )
+        else:
+            sess, _ = Session.objects.get_or_create(
+                metric_token=metric_tok,
+                start_time=day_start,
+                defaults=session_defaults
+            )
+        return sess
 
-    # Create activities
+    # Create activities - group by date from activity's start_time
     activities_created = []
-    total_activity_duration = 0
+    sessions_updated = {}  # Track sessions and their activity durations
 
     for activity_data in data.get('activities', []):
+        # Get the activity's start time
+        activity_start = activity_data['start_time']
+        if isinstance(activity_start, str):
+            activity_start = parse_datetime(activity_start)
+
+        # Get the date from the activity's start_time (handles midnight correctly)
+        activity_date = activity_start.date()
+
+        # Get or create the daily session for this activity's date
+        session = get_daily_session(activity_date, user, metric_token)
+
+        # Track session for duration update
+        if session.id not in sessions_updated:
+            sessions_updated[session.id] = {'session': session, 'duration': 0}
+
         # Calculate duration if not provided
         duration = activity_data.get('duration', 0)
         if duration == 0 and activity_data.get('end_time'):
-            # Calculate duration from start and end times
-            start = activity_data['start_time']
+            start = activity_start
             end = activity_data['end_time']
-            duration = int((end - start).total_seconds())
+
+            if isinstance(end, str):
+                end = parse_datetime(end)
+
+            if start and end:
+                duration = int((end - start).total_seconds())
 
         activity = Activity.objects.create(
             session=session,
@@ -192,46 +225,52 @@ def upload_tracking_data(request):
             window_title=activity_data.get('window_title', ''),
             process_name=activity_data.get('process_name', 'Unknown'),
             details=activity_data.get('details', ''),
-            start_time=activity_data['start_time'],
+            start_time=activity_start,
             end_time=activity_data.get('end_time'),
             duration=duration
         )
         activities_created.append(activity.id)
-        total_activity_duration += duration
+        sessions_updated[session.id]['duration'] += duration
 
-    # Calculate and update session duration
-    if session.end_time:
-        # Use actual session time span
-        duration = (session.end_time - session.start_time).total_seconds()
-        session.total_duration = int(duration)
-    elif total_activity_duration > 0:
-        # If session is still active, use sum of activity durations
-        session.total_duration = max(session.total_duration, total_activity_duration)
+    # Update durations for all affected sessions
+    for session_data in sessions_updated.values():
+        session = session_data['session']
+        activity_duration = session_data['duration']
 
-    session.save()
+        # Aggregate total duration from all activities in this session
+        total_duration = Activity.objects.filter(session=session).aggregate(
+            total=Sum('duration')
+        )['total'] or 0
+
+        session.total_duration = total_duration
+        session.save(update_fields=['total_duration'])
 
     # Log successful upload
-    logger.info(f"Successfully created {len(activities_created)} activities for session {session.id}")
-    logger.info(f"Session total duration: {session.total_duration} seconds ({session.total_duration/60:.1f} minutes)")
+    session_ids = list(sessions_updated.keys())
+    logger.info(f"Successfully created {len(activities_created)} activities across {len(session_ids)} session(s)")
+    for sid, sdata in sessions_updated.items():
+        logger.info(f"Session {sid} total duration: {sdata['session'].total_duration} seconds")
+
+    # Calculate total duration across all sessions
+    total_duration_all = sum(s['session'].total_duration for s in sessions_updated.values())
 
     response_data = {
         'status': 'success',
-        'session_id': session.id,
-        'session_created': session_created,
+        'session_ids': session_ids,
+        'sessions_count': len(session_ids),
         'activities_created': len(activities_created),
-        'total_duration_seconds': session.total_duration,
-        'total_duration_minutes': round(session.total_duration / 60, 2),
-        'session_is_active': session.is_active,
+        'total_duration_seconds': total_duration_all,
+        'total_duration_minutes': round(total_duration_all / 60, 2),
     }
 
     if user:
         response_data['user_id'] = user.id
         response_data['employee_id'] = user.employee_id
-        response_data['message'] = f'Successfully uploaded {len(activities_created)} activities for {user.employee_id}'
+        response_data['message'] = f'Successfully uploaded {len(activities_created)} activities for {user.employee_id} across {len(session_ids)} daily session(s)'
         logger.info(f"Upload for user: {user.employee_id}")
     else:
         response_data['metric_token'] = metric_token
-        response_data['message'] = f'Successfully uploaded {len(activities_created)} activities for metric token'
+        response_data['message'] = f'Successfully uploaded {len(activities_created)} activities across {len(session_ids)} daily session(s)'
         logger.info(f"Upload for metric token: {metric_token[:8]}...")
 
     return Response(response_data, status=status.HTTP_201_CREATED)
@@ -404,4 +443,235 @@ def recent_activities(request):
     return Response({
         'count': activities.count(),
         'activities': ActivitySerializer(activities, many=True).data
+    })
+
+
+# ============================================================================
+# PRODUCTIVITY DASHBOARD ENDPOINTS
+# ============================================================================
+
+@api_view(['GET'])
+def productivity_dashboard(request):
+    """
+    Get overall productivity dashboard stats + employee rankings.
+    Query params:
+    - days: number of days to include (default: 7)
+    """
+    days = int(request.query_params.get('days', 7))
+    date_to = timezone.now()
+    date_from = date_to - timedelta(days=days)
+
+    dashboard_data = ProductivityService.get_dashboard_summary(date_from, date_to)
+
+    return Response({
+        'period': {
+            'from': date_from.date().isoformat(),
+            'to': date_to.date().isoformat()
+        },
+        **dashboard_data
+    })
+
+
+@api_view(['GET'])
+def productivity_employees_list(request):
+    """
+    Get all employees with their productivity scores.
+    Query params:
+    - days: number of days to include (default: 7)
+    - department: filter by department ID
+    - status: filter by productivity status (productive, needs_improvement, unproductive)
+    """
+    days = int(request.query_params.get('days', 7))
+    department = request.query_params.get('department')
+    status_filter = request.query_params.get('status')
+
+    date_to = timezone.now()
+    date_from = date_to - timedelta(days=days)
+
+    employees_data = ProductivityService.get_all_employees_productivity(date_from, date_to)
+
+    # Apply filters
+    if department:
+        employees_data = [e for e in employees_data if str(e.get('department_id')) == department]
+
+    if status_filter:
+        employees_data = [e for e in employees_data if e.get('status') == status_filter]
+
+    return Response({
+        'period': {
+            'from': date_from.date().isoformat(),
+            'to': date_to.date().isoformat()
+        },
+        'employees': employees_data
+    })
+
+
+@api_view(['GET'])
+def productivity_employee_detail(request, user_id):
+    """
+    Get detailed productivity data for a single employee.
+    Query params:
+    - days: number of days to include (default: 7)
+    """
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    days = int(request.query_params.get('days', 7))
+    date_to = timezone.now()
+    date_from = date_to - timedelta(days=days)
+
+    productivity = ProductivityService.calculate_user_productivity(user, date_from, date_to)
+    daily_trend = ProductivityService.get_user_daily_trend(user, date_from, date_to)
+
+    total_hours = productivity['total_tracked_hours']
+    productive_pct = round((productivity['productive_hours'] / total_hours * 100), 1) if total_hours > 0 else 0
+    neutral_pct = round((productivity['neutral_hours'] / total_hours * 100), 1) if total_hours > 0 else 0
+    non_productive_pct = round((productivity['non_productive_hours'] / total_hours * 100), 1) if total_hours > 0 else 0
+
+    return Response({
+        'user': {
+            'id': user.id,
+            'name': user.full_name,
+            'employee_id': user.employee_id,
+            'department': user.department.name if user.department else None
+        },
+        'period': {
+            'from': date_from.date().isoformat(),
+            'to': date_to.date().isoformat()
+        },
+        'productivity_score': productivity['productivity_score'],
+        'status': ProductivityService.get_productivity_status(productivity['productivity_score']),
+        'breakdown': {
+            'productive': {
+                'hours': productivity['productive_hours'],
+                'percentage': productive_pct
+            },
+            'neutral': {
+                'hours': productivity['neutral_hours'],
+                'percentage': neutral_pct
+            },
+            'non_productive': {
+                'hours': productivity['non_productive_hours'],
+                'percentage': non_productive_pct
+            }
+        },
+        'total_tracked_hours': total_hours,
+        'daily_trend': daily_trend,
+        'top_apps': productivity['top_apps']
+    })
+
+
+@api_view(['GET'])
+def productivity_employee_apps(request, user_id):
+    """
+    Get top apps usage for an employee.
+    Query params:
+    - days: number of days to include (default: 7)
+    - category: filter by category (PRODUCTIVE, NEUTRAL, NON_PRODUCTIVE)
+    """
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    days = int(request.query_params.get('days', 7))
+    category_filter = request.query_params.get('category')
+
+    date_to = timezone.now()
+    date_from = date_to - timedelta(days=days)
+
+    productivity = ProductivityService.calculate_user_productivity(user, date_from, date_to)
+    apps = productivity['top_apps']
+
+    if category_filter:
+        apps = [app for app in apps if app['category'] == category_filter]
+
+    return Response({
+        'user': {
+            'id': user.id,
+            'name': user.full_name
+        },
+        'period': {
+            'from': date_from.date().isoformat(),
+            'to': date_to.date().isoformat()
+        },
+        'apps': apps
+    })
+
+
+# ============================================================================
+# APP CATEGORY MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@api_view(['GET', 'POST'])
+def app_categories_list(request):
+    """
+    GET: List all app categories
+    POST: Create new app category
+    """
+    if request.method == 'GET':
+        category_filter = request.query_params.get('category')
+        categories = AppCategory.objects.all()
+
+        if category_filter:
+            categories = categories.filter(category=category_filter)
+
+        serializer = AppCategorySerializer(categories, many=True)
+        return Response(serializer.data)
+
+    elif request.method == 'POST':
+        serializer = AppCategoryCreateSerializer(data=request.data)
+        if serializer.is_valid():
+            # Set created_by if user is authenticated
+            created_by = request.user if request.user.is_authenticated else None
+            category = serializer.save(created_by=created_by, is_global=True)
+            return Response(
+                AppCategorySerializer(category).data,
+                status=status.HTTP_201_CREATED
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+def app_category_detail(request, pk):
+    """
+    GET: Get app category details
+    PUT: Update app category
+    DELETE: Delete app category
+    """
+    try:
+        category = AppCategory.objects.get(pk=pk)
+    except AppCategory.DoesNotExist:
+        return Response({'error': 'App category not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        serializer = AppCategorySerializer(category)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        serializer = AppCategorySerializer(category, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'DELETE':
+        category.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['GET'])
+def app_categories_suggestions(request):
+    """
+    Get suggestions for uncategorized apps based on activity data.
+    Query params:
+    - limit: maximum number of suggestions (default: 20)
+    """
+    limit = int(request.query_params.get('limit', 20))
+    suggestions = ProductivityService.get_uncategorized_apps(limit=limit)
+
+    return Response({
+        'uncategorized_apps': suggestions
     })

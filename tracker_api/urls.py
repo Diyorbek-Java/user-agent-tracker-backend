@@ -5,7 +5,12 @@ from rest_framework.response import Response
 from .views import (
     UserViewSet, SessionViewSet, ActivityViewSet,
     upload_tracking_data, dashboard_stats, user_activity_report,
-    merge_metric_token, recent_activities
+    merge_metric_token, recent_activities,
+    # Productivity dashboard endpoints
+    productivity_dashboard, productivity_employees_list,
+    productivity_employee_detail, productivity_employee_apps,
+    # App category management endpoints
+    app_categories_list, app_category_detail, app_categories_suggestions
 )
 from .auth_views import (
     login_view, set_password_view, invite_staff_view,
@@ -52,4 +57,15 @@ urlpatterns = [
     path('dashboard/', dashboard_stats, name='dashboard-stats'),
     path('users/<int:user_id>/report/', user_activity_report, name='user-report'),
     path('activities/recent/', recent_activities, name='recent-activities'),
+
+    # Productivity Dashboard endpoints
+    path('productivity/dashboard/', productivity_dashboard, name='productivity-dashboard'),
+    path('productivity/employees/', productivity_employees_list, name='productivity-employees-list'),
+    path('productivity/employees/<int:user_id>/', productivity_employee_detail, name='productivity-employee-detail'),
+    path('productivity/employees/<int:user_id>/apps/', productivity_employee_apps, name='productivity-employee-apps'),
+
+    # App Category Management endpoints
+    path('app-categories/', app_categories_list, name='app-categories-list'),
+    path('app-categories/<int:pk>/', app_category_detail, name='app-category-detail'),
+    path('app-categories/suggestions/', app_categories_suggestions, name='app-categories-suggestions'),
 ]

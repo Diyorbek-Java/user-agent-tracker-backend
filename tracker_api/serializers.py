@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Session, Activity, ApplicationUsageStats
+from .models import User, Session, Activity, ApplicationUsageStats, AppCategory
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -98,4 +98,31 @@ class BulkDataUploadSerializer(serializers.Serializer):
                 raise serializers.ValidationError("Each activity must have a process_name")
             if 'start_time' not in activity:
                 raise serializers.ValidationError("Each activity must have a start_time")
+        return value
+
+
+class AppCategorySerializer(serializers.ModelSerializer):
+    """Serializer for AppCategory model"""
+    created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
+
+    class Meta:
+        model = AppCategory
+        fields = [
+            'id', 'process_name', 'display_name', 'category', 'description',
+            'is_global', 'created_at', 'updated_at', 'created_by', 'created_by_name'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+
+
+class AppCategoryCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating AppCategory"""
+
+    class Meta:
+        model = AppCategory
+        fields = ['process_name', 'display_name', 'category', 'description']
+
+    def validate_process_name(self, value):
+        """Check for duplicate process names (case-insensitive)"""
+        if AppCategory.objects.filter(process_name__iexact=value).exists():
+            raise serializers.ValidationError("An app category with this process name already exists.")
         return value

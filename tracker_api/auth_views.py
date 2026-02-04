@@ -93,8 +93,10 @@ def login_view(request):
                 'full_name': user.full_name,
                 'role': user.role,
                 'is_admin': user.is_admin_user(),
-                'department': user.department,
-                'position': user.position,
+                'department': user.department.name if user.department else None,
+                'department_id': user.department.id if user.department else None,
+                'position': user.position.title if user.position else None,
+                'position_id': user.position.id if user.position else None,
             }
         })
 
