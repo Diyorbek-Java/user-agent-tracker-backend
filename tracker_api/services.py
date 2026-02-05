@@ -7,7 +7,7 @@ from django.utils import timezone
 from datetime import timedelta
 from collections import defaultdict
 
-from .models import User, Activity, AppCategory, Session
+from .models import User, Activity, AppCategory, DepartmentAppRule, Session
 
 
 class ProductivityService:
@@ -18,11 +18,22 @@ class ProductivityService:
     NEEDS_IMPROVEMENT_THRESHOLD = 50  # >= 50% = needs_improvement, < 50% = unproductive
 
     @staticmethod
-    def get_app_category(process_name: str) -> str:
+    def get_app_category(process_name: str, department=None) -> str:
         """
         Get the category for an application by its process name.
+        Checks department-specific rules first, then falls back to global category.
         Returns: PRODUCTIVE, NEUTRAL, or NON_PRODUCTIVE
         """
+        # Check for department-specific rule first
+        if department:
+            dept_rule = DepartmentAppRule.objects.filter(
+                department=department,
+                app_category__process_name=process_name
+            ).first()
+            if dept_rule:
+                return dept_rule.category_override
+
+        # Fall back to global app category
         app_cat = AppCategory.objects.filter(
             Q(process_name__iexact=process_name) |
             Q(process_name__iexact=process_name.replace('.exe', ''))
@@ -35,7 +46,7 @@ class ProductivityService:
         return AppCategory.NEUTRAL
 
     @staticmethod
-    def calculate_user_productivity(user: User, date_from, date_to) -> dict:
+    def calculate_user_productivity(user: User, date_from, date_to, department=None) -> dict:
         """
         Calculate productivity metrics for a single user within a date range.
 
@@ -63,7 +74,7 @@ class ProductivityService:
             process_name = activity['process_name']
             duration = activity['total_duration'] or 0
             count = activity['count'] or 0
-            category = ProductivityService.get_app_category(process_name)
+            category = ProductivityService.get_app_category(process_name, department)
 
             app_durations[process_name]['duration'] = duration
             app_durations[process_name]['category'] = category
@@ -139,7 +150,7 @@ class ProductivityService:
         employees_data = []
 
         for user in users_with_activity:
-            productivity = ProductivityService.calculate_user_productivity(user, date_from, date_to)
+            productivity = ProductivityService.calculate_user_productivity(user, date_from, date_to, user.department)
 
             employees_data.append({
                 'id': user.id,
@@ -269,7 +280,7 @@ class ProductivityService:
                 timezone.datetime.combine(current_date, timezone.datetime.max.time())
             )
 
-            day_productivity = ProductivityService.calculate_user_productivity(user, day_start, day_end)
+            day_productivity = ProductivityService.calculate_user_productivity(user, day_start, day_end, user.department)
 
             # Only include days with activity
             if day_productivity['total_tracked_hours'] > 0:
