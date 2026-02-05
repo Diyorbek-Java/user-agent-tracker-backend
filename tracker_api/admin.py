@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
     User, Session, Activity, ApplicationUsageStats,
     AppCategory, DepartmentAppRule, ManualTimeEntry,
-    Department, JobPosition
+    Department, JobPosition, PositionAppWeight, ProductivitySettings
 )
 
 
@@ -128,3 +128,25 @@ class ManualTimeEntryAdmin(admin.ModelAdmin):
     date_hierarchy = 'start_time'
     ordering = ['-start_time']
     readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(PositionAppWeight)
+class PositionAppWeightAdmin(admin.ModelAdmin):
+    list_display = ['position', 'app_category', 'weight', 'reason', 'created_by', 'created_at']
+    list_filter = ['position', 'weight', 'created_at']
+    search_fields = ['position__title', 'app_category__display_name', 'app_category__process_name', 'reason']
+    ordering = ['position', 'app_category']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(ProductivitySettings)
+class ProductivitySettingsAdmin(admin.ModelAdmin):
+    list_display = ['default_weight', 'productive_threshold', 'needs_improvement_threshold', 'updated_at']
+    readonly_fields = ['updated_at']
+
+    def has_add_permission(self, request):
+        # Only allow one instance
+        return not ProductivitySettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False

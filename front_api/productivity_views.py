@@ -12,11 +12,14 @@ from django.db.models import Sum, Q
 from django.utils import timezone
 from datetime import timedelta
 
-from tracker_api.models import AppCategory, DepartmentAppRule, ManualTimeEntry, Activity
+from tracker_api.models import AppCategory, DepartmentAppRule, ManualTimeEntry, Activity, PositionAppWeight, ProductivitySettings
+from tracker_api.services import ProductivityService
 from .serializers import (
     AppCategorySerializer,
     DepartmentAppRuleSerializer,
-    ManualTimeEntrySerializer
+    ManualTimeEntrySerializer,
+    PositionAppWeightSerializer,
+    ProductivitySettingsSerializer
 )
 
 
@@ -282,18 +285,27 @@ def enhanced_productivity_report(request):
         start_time__gte=start_date
     )
 
-    # Categorize activities
+    # Calculate weighted productivity for computer activities
+    weighted_time = 0
+    total_computer_duration = 0
+
+    for activity in activities:
+        duration = activity.duration or 0
+        weight = ProductivityService.get_app_weight(activity.process_name, target_user.position)
+        weighted_time += duration * weight
+        total_computer_duration += duration
+
+    # Derive approximate buckets for backwards compat display
     productive_time = 0
     neutral_time = 0
     non_productive_time = 0
 
     for activity in activities:
-        category = get_app_category_for_user(activity.process_name, target_user.department)
         duration = activity.duration or 0
-
-        if category == AppCategory.PRODUCTIVE:
+        weight = ProductivityService.get_app_weight(activity.process_name, target_user.position)
+        if weight >= 0.7:
             productive_time += duration
-        elif category == AppCategory.NON_PRODUCTIVE:
+        elif weight <= 0.3:
             non_productive_time += duration
         else:
             neutral_time += duration
@@ -314,12 +326,12 @@ def enhanced_productivity_report(request):
 
     # Calculate totals
     total_computer_time = productive_time + neutral_time + non_productive_time
-    total_productive_time = productive_time + manual_productive
-    total_time = total_computer_time + manual_productive + manual_non_productive
+    total_weighted_productive = weighted_time + manual_productive
+    total_time = total_computer_duration + manual_productive + manual_non_productive
 
-    # Calculate productivity score
+    # Calculate productivity score using weights
     if total_time > 0:
-        productivity_score = round((total_productive_time / total_time) * 100, 2)
+        productivity_score = round((total_weighted_productive / total_time) * 100, 2)
     else:
         productivity_score = 0
 
@@ -336,7 +348,7 @@ def enhanced_productivity_report(request):
             'total_hours': round((manual_productive + manual_non_productive) / 3600, 2),
         },
         'summary': {
-            'total_productive_hours': round(total_productive_time / 3600, 2),
+            'total_productive_hours': round(total_weighted_productive / 3600, 2),
             'total_hours': round(total_time / 3600, 2),
             'productivity_score': productivity_score,
         }
@@ -344,20 +356,102 @@ def enhanced_productivity_report(request):
 
 
 def get_app_category_for_user(process_name, department):
-    """Helper function to get app category for a user's department"""
-    # First check for department-specific rule
-    if department:
-        dept_rule = DepartmentAppRule.objects.filter(
-            department=department,
-            app_category__process_name=process_name
-        ).first()
-        if dept_rule:
-            return dept_rule.category_override
+    """Helper function to get app category for a user's department (kept for compatibility)"""
+    return ProductivityService.get_app_category(process_name, department)
 
-    # Fall back to global app category
-    app_cat = AppCategory.objects.filter(process_name=process_name).first()
-    if app_cat:
-        return app_cat.category
 
-    # Default to neutral
-    return AppCategory.NEUTRAL
+# ============================================================================
+# POSITION APP WEIGHTS ENDPOINTS
+# ============================================================================
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def position_weights_list(request):
+    """
+    GET: List all position app weights (optionally filter by ?position=<id>)
+    POST: Create new position app weight (Admin/Manager only)
+    """
+    if request.method == 'GET':
+        weights = PositionAppWeight.objects.select_related('position', 'app_category', 'created_by').all()
+        position_id = request.GET.get('position')
+        if position_id:
+            weights = weights.filter(position_id=position_id)
+        serializer = PositionAppWeightSerializer(weights, many=True)
+        return Response(serializer.data)
+
+    elif request.method == 'POST':
+        if not (request.user.is_admin_user() or request.user.is_manager_user()):
+            return Response({
+                'error': 'Only administrators and managers can create position weights'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = PositionAppWeightSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(created_by=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def position_weight_detail(request, pk):
+    """
+    GET: Get position weight details
+    PUT: Update position weight (Admin/Manager only)
+    DELETE: Delete position weight (Admin/Manager only)
+    """
+    try:
+        weight = PositionAppWeight.objects.select_related('position', 'app_category', 'created_by').get(pk=pk)
+    except PositionAppWeight.DoesNotExist:
+        return Response({'error': 'Position weight not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        serializer = PositionAppWeightSerializer(weight)
+        return Response(serializer.data)
+
+    elif request.method in ['PUT', 'DELETE']:
+        if not (request.user.is_admin_user() or request.user.is_manager_user()):
+            return Response({
+                'error': 'Only administrators and managers can modify position weights'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if request.method == 'PUT':
+            serializer = PositionAppWeightSerializer(weight, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        elif request.method == 'DELETE':
+            weight.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ============================================================================
+# PRODUCTIVITY SETTINGS ENDPOINT
+# ============================================================================
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def productivity_settings_view(request):
+    """
+    GET: Get current productivity settings
+    PUT: Update productivity settings (Admin/Manager only)
+    """
+    settings = ProductivitySettings.get_settings()
+
+    if request.method == 'GET':
+        serializer = ProductivitySettingsSerializer(settings)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        if not (request.user.is_admin_user() or request.user.is_manager_user()):
+            return Response({
+                'error': 'Only administrators and managers can update productivity settings'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = ProductivitySettingsSerializer(settings, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save(updated_by=request.user)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

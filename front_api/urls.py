@@ -39,4 +39,11 @@ urlpatterns = [
 
     # Enhanced productivity report
     path('enhanced-productivity/', productivity_views.enhanced_productivity_report, name='enhanced-productivity'),
+
+    # Position app weights endpoints
+    path('position-weights/', productivity_views.position_weights_list, name='position-weights-list'),
+    path('position-weights/<int:pk>/', productivity_views.position_weight_detail, name='position-weight-detail'),
+
+    # Productivity settings endpoint
+    path('productivity-settings/', productivity_views.productivity_settings_view, name='productivity-settings'),
 ]

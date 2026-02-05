@@ -1,30 +1,32 @@
 """
 Productivity calculation services for the dashboard.
-Handles all productivity-related business logic.
+Handles all productivity-related business logic using weighted scoring.
 """
 from django.db.models import Sum, Count, Q
 from django.utils import timezone
 from datetime import timedelta
 from collections import defaultdict
 
-from .models import User, Activity, AppCategory, DepartmentAppRule, Session
+from .models import (
+    User, Activity, AppCategory, DepartmentAppRule, Session,
+    PositionAppWeight, ProductivitySettings
+)
 
 
 class ProductivityService:
     """Service class for productivity calculations"""
 
-    # Status thresholds
-    PRODUCTIVE_THRESHOLD = 70  # >= 70% = productive
-    NEEDS_IMPROVEMENT_THRESHOLD = 50  # >= 50% = needs_improvement, < 50% = unproductive
+    @staticmethod
+    def _get_settings():
+        """Get cached productivity settings"""
+        return ProductivitySettings.get_settings()
 
     @staticmethod
     def get_app_category(process_name: str, department=None) -> str:
         """
         Get the category for an application by its process name.
-        Checks department-specific rules first, then falls back to global category.
-        Returns: PRODUCTIVE, NEUTRAL, or NON_PRODUCTIVE
+        Kept for backwards compatibility (dashboard summary top apps display).
         """
-        # Check for department-specific rule first
         if department:
             dept_rule = DepartmentAppRule.objects.filter(
                 department=department,
@@ -33,7 +35,6 @@ class ProductivityService:
             if dept_rule:
                 return dept_rule.category_override
 
-        # Fall back to global app category
         app_cat = AppCategory.objects.filter(
             Q(process_name__iexact=process_name) |
             Q(process_name__iexact=process_name.replace('.exe', ''))
@@ -42,18 +43,50 @@ class ProductivityService:
         if app_cat:
             return app_cat.category
 
-        # Uncategorized apps default to NEUTRAL
         return AppCategory.NEUTRAL
 
     @staticmethod
-    def calculate_user_productivity(user: User, date_from, date_to, department=None) -> dict:
+    def get_app_weight(process_name: str, position=None) -> float:
+        """
+        Get the productivity weight (0.0-1.0) for an application.
+        Resolution order:
+        1. Position-specific weight (PositionAppWeight)
+        2. Fall back to category-based default (PRODUCTIVE=1.0, NON_PRODUCTIVE=0.0, NEUTRAL=default_weight)
+        3. Uncategorized apps use configurable default_weight
+        """
+        settings = ProductivityService._get_settings()
+
+        # Find the AppCategory for this process
+        app_cat = AppCategory.objects.filter(
+            Q(process_name__iexact=process_name) |
+            Q(process_name__iexact=process_name.replace('.exe', ''))
+        ).first()
+
+        if not app_cat:
+            return settings.default_weight  # uncategorized apps
+
+        # Check position-specific weight
+        if position:
+            pos_weight = PositionAppWeight.objects.filter(
+                position=position, app_category=app_cat
+            ).first()
+            if pos_weight:
+                return pos_weight.weight
+
+        # Fall back to category-based default
+        if app_cat.category == 'PRODUCTIVE':
+            return 1.0
+        elif app_cat.category == 'NON_PRODUCTIVE':
+            return 0.0
+        else:
+            return settings.default_weight  # NEUTRAL
+
+    @staticmethod
+    def calculate_user_productivity(user: User, date_from, date_to, position=None) -> dict:
         """
         Calculate productivity metrics for a single user within a date range.
-
-        Returns: {
-            productive_seconds, neutral_seconds, non_productive_seconds,
-            productivity_score (percentage), top_apps[]
-        }
+        Uses weighted scoring: each app's time is multiplied by its weight (0.0-1.0).
+        Score = weighted_productive_seconds / total_seconds * 100
         """
         # Get all activities for user in date range
         activities = Activity.objects.filter(
@@ -65,36 +98,45 @@ class ProductivityService:
             count=Count('id')
         )
 
-        productive_seconds = 0
-        neutral_seconds = 0
-        non_productive_seconds = 0
-        app_durations = defaultdict(lambda: {'duration': 0, 'category': None, 'count': 0})
+        weighted_seconds = 0
+        total_seconds = 0
+        app_durations = defaultdict(lambda: {'duration': 0, 'category': None, 'weight': 0.5, 'count': 0})
 
         for activity in activities:
             process_name = activity['process_name']
             duration = activity['total_duration'] or 0
             count = activity['count'] or 0
-            category = ProductivityService.get_app_category(process_name, department)
+            weight = ProductivityService.get_app_weight(process_name, position)
+            # Keep category for display purposes
+            category = ProductivityService.get_app_category(process_name, user.department)
 
             app_durations[process_name]['duration'] = duration
             app_durations[process_name]['category'] = category
+            app_durations[process_name]['weight'] = weight
             app_durations[process_name]['count'] = count
 
-            if category == AppCategory.PRODUCTIVE:
-                productive_seconds += duration
-            elif category == AppCategory.NON_PRODUCTIVE:
-                non_productive_seconds += duration
-            else:
-                neutral_seconds += duration
+            weighted_seconds += duration * weight
+            total_seconds += duration
 
-        # Calculate productivity score
-        # Score = productive / (productive + non_productive) * 100
-        # Neutral time doesn't affect the score
-        scorable_time = productive_seconds + non_productive_seconds
-        if scorable_time > 0:
-            productivity_score = round((productive_seconds / scorable_time) * 100, 1)
+        # Calculate productivity score using weights
+        if total_seconds > 0:
+            productivity_score = round((weighted_seconds / total_seconds) * 100, 1)
         else:
-            productivity_score = 100.0 if productive_seconds > 0 else 0.0
+            productivity_score = 0.0
+
+        # Derive approximate productive/neutral/non_productive for backwards compat
+        productive_seconds = 0
+        neutral_seconds = 0
+        non_productive_seconds = 0
+        for data in app_durations.values():
+            w = data['weight']
+            d = data['duration']
+            if w >= 0.7:
+                productive_seconds += d
+            elif w <= 0.3:
+                non_productive_seconds += d
+            else:
+                neutral_seconds += d
 
         # Get top apps by duration
         top_apps = sorted(
@@ -102,6 +144,7 @@ class ProductivityService:
                 {
                     'name': name,
                     'category': data['category'],
+                    'weight': data['weight'],
                     'hours': round(data['duration'] / 3600, 2),
                     'seconds': data['duration'],
                     'count': data['count']
@@ -116,20 +159,22 @@ class ProductivityService:
             'productive_seconds': productive_seconds,
             'neutral_seconds': neutral_seconds,
             'non_productive_seconds': non_productive_seconds,
+            'weighted_productive_seconds': round(weighted_seconds),
             'productive_hours': round(productive_seconds / 3600, 2),
             'neutral_hours': round(neutral_seconds / 3600, 2),
             'non_productive_hours': round(non_productive_seconds / 3600, 2),
-            'total_tracked_hours': round((productive_seconds + neutral_seconds + non_productive_seconds) / 3600, 2),
+            'total_tracked_hours': round(total_seconds / 3600, 2),
             'productivity_score': productivity_score,
             'top_apps': top_apps
         }
 
     @staticmethod
     def get_productivity_status(score: float) -> str:
-        """Get status label based on productivity score"""
-        if score >= ProductivityService.PRODUCTIVE_THRESHOLD:
+        """Get status label based on productivity score (uses configurable thresholds)"""
+        settings = ProductivityService._get_settings()
+        if score >= settings.productive_threshold:
             return 'productive'
-        elif score >= ProductivityService.NEEDS_IMPROVEMENT_THRESHOLD:
+        elif score >= settings.needs_improvement_threshold:
             return 'needs_improvement'
         else:
             return 'unproductive'
@@ -140,7 +185,6 @@ class ProductivityService:
         Get productivity data for all employees within a date range.
         Returns list of all employees with their productivity scores.
         """
-        # Get all users who have sessions in the date range
         users_with_activity = User.objects.filter(
             sessions__start_time__gte=date_from,
             sessions__start_time__lte=date_to,
@@ -150,7 +194,9 @@ class ProductivityService:
         employees_data = []
 
         for user in users_with_activity:
-            productivity = ProductivityService.calculate_user_productivity(user, date_from, date_to, user.department)
+            productivity = ProductivityService.calculate_user_productivity(
+                user, date_from, date_to, user.position
+            )
 
             employees_data.append({
                 'id': user.id,
@@ -164,10 +210,9 @@ class ProductivityService:
                 'non_productive_hours': productivity['non_productive_hours'],
                 'total_tracked_hours': productivity['total_tracked_hours'],
                 'status': ProductivityService.get_productivity_status(productivity['productivity_score']),
-                'top_apps': productivity['top_apps'][:3]  # Top 3 apps for list view
+                'top_apps': productivity['top_apps'][:3]
             })
 
-        # Sort by productivity score descending
         employees_data.sort(key=lambda x: x['productivity_score'], reverse=True)
 
         return employees_data
@@ -177,6 +222,7 @@ class ProductivityService:
         """
         Get overall dashboard summary with aggregated stats.
         """
+        settings = ProductivityService._get_settings()
         employees_data = ProductivityService.get_all_employees_productivity(date_from, date_to)
 
         total_employees = len(employees_data)
@@ -189,7 +235,7 @@ class ProductivityService:
         else:
             average_productivity = 0.0
 
-        # Top performers (score >= 70%)
+        # Top performers
         top_performers = [
             {
                 'id': e['id'],
@@ -198,17 +244,16 @@ class ProductivityService:
                 'productive_hours': e['productive_hours']
             }
             for e in employees_data[:5]
-            if e['productivity_score'] >= ProductivityService.PRODUCTIVE_THRESHOLD
+            if e['productivity_score'] >= settings.productive_threshold
         ]
 
-        # Needs attention (score < 50%)
+        # Needs attention
         needs_attention = []
         for e in reversed(employees_data):
-            if e['productivity_score'] < ProductivityService.NEEDS_IMPROVEMENT_THRESHOLD:
-                # Find top distraction (non-productive app)
+            if e['productivity_score'] < settings.needs_improvement_threshold:
                 top_distraction = None
                 for app in e.get('top_apps', []):
-                    if app['category'] == AppCategory.NON_PRODUCTIVE:
+                    if app.get('weight', 0.5) <= 0.3:
                         top_distraction = app['name']
                         break
 
@@ -280,9 +325,10 @@ class ProductivityService:
                 timezone.datetime.combine(current_date, timezone.datetime.max.time())
             )
 
-            day_productivity = ProductivityService.calculate_user_productivity(user, day_start, day_end, user.department)
+            day_productivity = ProductivityService.calculate_user_productivity(
+                user, day_start, day_end, user.position
+            )
 
-            # Only include days with activity
             if day_productivity['total_tracked_hours'] > 0:
                 trends.append({
                     'date': current_date.isoformat(),
@@ -292,7 +338,6 @@ class ProductivityService:
 
             current_date += timedelta(days=1)
 
-        # Return in reverse chronological order
         return list(reversed(trends))
 
     @staticmethod
@@ -301,12 +346,10 @@ class ProductivityService:
         Get apps from activity data that are not yet categorized.
         Returns suggestions for categorization.
         """
-        # Get all categorized process names
         categorized = set(
             AppCategory.objects.values_list('process_name', flat=True)
         )
 
-        # Get activity data for uncategorized apps
         uncategorized_activities = Activity.objects.exclude(
             process_name__in=categorized
         ).values('process_name').annotate(
@@ -317,7 +360,6 @@ class ProductivityService:
         suggestions = []
         for activity in uncategorized_activities:
             process_name = activity['process_name']
-            # Create a display name by cleaning up the process name
             display_name = process_name.replace('.exe', '').replace('_', ' ').title()
 
             suggestions.append({

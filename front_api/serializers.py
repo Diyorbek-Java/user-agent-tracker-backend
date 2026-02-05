@@ -2,7 +2,7 @@ from rest_framework import serializers
 from tracker_api.models import (
     User, Session, Activity, ApplicationUsageStats,
     AppCategory, DepartmentAppRule, ManualTimeEntry,
-    Department, JobPosition
+    Department, JobPosition, PositionAppWeight, ProductivitySettings
 )
 from django.db.models import Sum, Count, F
 from django.utils import timezone
@@ -176,3 +176,27 @@ class ManualTimeEntrySerializer(serializers.ModelSerializer):
         # Auto-set user from request context
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class PositionAppWeightSerializer(serializers.ModelSerializer):
+    """Serializer for position-specific app productivity weights"""
+    position_title = serializers.CharField(source='position.title', read_only=True)
+    app_display_name = serializers.CharField(source='app_category.display_name', read_only=True)
+    app_process_name = serializers.CharField(source='app_category.process_name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
+
+    class Meta:
+        model = PositionAppWeight
+        fields = ['id', 'position', 'position_title', 'app_category', 'app_display_name',
+                  'app_process_name', 'weight', 'reason', 'created_at', 'updated_at',
+                  'created_by', 'created_by_name']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+
+
+class ProductivitySettingsSerializer(serializers.ModelSerializer):
+    """Serializer for global productivity settings (singleton)"""
+
+    class Meta:
+        model = ProductivitySettings
+        fields = ['default_weight', 'productive_threshold', 'needs_improvement_threshold', 'updated_at']
+        read_only_fields = ['updated_at']

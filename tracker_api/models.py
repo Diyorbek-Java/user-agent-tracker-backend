@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 import secrets
 import string
@@ -381,3 +382,73 @@ class ManualTimeEntry(models.Model):
             delta = self.end_time - self.start_time
             self.duration_minutes = int(delta.total_seconds() / 60)
         super().save(*args, **kwargs)
+
+
+class PositionAppWeight(models.Model):
+    """
+    Position-specific application productivity weight.
+    Links a JobPosition + AppCategory with a weight (0.0-1.0).
+    Example: Developer + Visual Studio = 1.0, Developer + Chrome = 0.5
+    """
+    position = models.ForeignKey(
+        JobPosition,
+        on_delete=models.CASCADE,
+        related_name='app_weights',
+        help_text="Job position this weight applies to"
+    )
+    app_category = models.ForeignKey(
+        AppCategory,
+        on_delete=models.CASCADE,
+        related_name='position_weights',
+        help_text="Application this weight is for"
+    )
+    weight = models.FloatField(
+        default=0.5,
+        validators=[MinValueValidator(0.0), MaxValueValidator(1.0)],
+        help_text="Productivity weight (0.0 = fully unproductive, 1.0 = fully productive)"
+    )
+    reason = models.TextField(blank=True, null=True, help_text="Why this weight was assigned")
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_position_weights')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['position', 'app_category']
+        ordering = ['position', 'app_category']
+        verbose_name_plural = 'Position App Weights'
+
+    def __str__(self):
+        return f"{self.position.title}: {self.app_category.display_name} = {self.weight}"
+
+
+class ProductivitySettings(models.Model):
+    """
+    Singleton model for global productivity settings.
+    Stores configurable defaults for the productivity calculation.
+    """
+    default_weight = models.FloatField(
+        default=0.5,
+        validators=[MinValueValidator(0.0), MaxValueValidator(1.0)],
+        help_text="Default weight for uncategorized apps (0.0-1.0)"
+    )
+    productive_threshold = models.IntegerField(
+        default=70,
+        help_text="Score >= this is 'productive' (%)"
+    )
+    needs_improvement_threshold = models.IntegerField(
+        default=50,
+        help_text="Score >= this is 'needs improvement', below is 'unproductive' (%)"
+    )
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'Productivity Settings'
+
+    def __str__(self):
+        return f"Productivity Settings (default_weight={self.default_weight})"
+
+    @classmethod
+    def get_settings(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
