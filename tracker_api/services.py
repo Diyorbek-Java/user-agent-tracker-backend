@@ -338,7 +338,7 @@ class ProductivityService:
 
             current_date += timedelta(days=1)
 
-        return list(reversed(trends))
+        return trends
 
     @staticmethod
     def get_uncategorized_apps(limit: int = 20) -> list:
