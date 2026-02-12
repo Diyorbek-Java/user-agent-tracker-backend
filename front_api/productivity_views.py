@@ -17,7 +17,6 @@ from tracker_api.services import ProductivityService
 from .serializers import (
     AppCategorySerializer,
     DepartmentAppRuleSerializer,
-    ManualTimeEntrySerializer,
     PositionAppWeightSerializer,
     ProductivitySettingsSerializer
 )
@@ -158,94 +157,6 @@ def department_app_rule_detail(request, pk):
 
 
 # ============================================================================
-# MANUAL TIME ENTRY ENDPOINTS
-# ============================================================================
-
-@api_view(['GET', 'POST'])
-@permission_classes([IsAuthenticated])
-def manual_time_entries_list(request):
-    """
-    GET: List manual time entries for current user (or all users for Admin/Manager)
-    POST: Create new manual time entry
-    """
-    if request.method == 'GET':
-        # Admin/Manager can view all users' entries, employees only their own
-        if request.user.is_admin_user() or request.user.is_manager_user():
-            user_id = request.GET.get('user_id')
-            if user_id:
-                entries = ManualTimeEntry.objects.filter(user_id=user_id)
-            else:
-                entries = ManualTimeEntry.objects.all()
-        else:
-            entries = ManualTimeEntry.objects.filter(user=request.user)
-
-        # Filter by date range if provided
-        start_date = request.GET.get('start_date')
-        end_date = request.GET.get('end_date')
-        if start_date:
-            entries = entries.filter(start_time__gte=start_date)
-        if end_date:
-            entries = entries.filter(end_time__lte=end_date)
-
-        serializer = ManualTimeEntrySerializer(entries, many=True)
-        return Response(serializer.data)
-
-    elif request.method == 'POST':
-        serializer = ManualTimeEntrySerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['GET', 'PUT', 'DELETE'])
-@permission_classes([IsAuthenticated])
-def manual_time_entry_detail(request, pk):
-    """
-    GET: Get manual time entry details
-    PUT: Update manual time entry (own entries only, or Admin/Manager can update any)
-    DELETE: Delete manual time entry (own entries only, or Admin/Manager can delete any)
-    """
-    try:
-        entry = ManualTimeEntry.objects.get(pk=pk)
-    except ManualTimeEntry.DoesNotExist:
-        return Response({'error': 'Time entry not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    # Check permissions
-    if not (request.user.is_admin_user() or request.user.is_manager_user() or entry.user == request.user):
-        return Response({
-            'error': 'You do not have permission to access this entry'
-        }, status=status.HTTP_403_FORBIDDEN)
-
-    if request.method == 'GET':
-        serializer = ManualTimeEntrySerializer(entry)
-        return Response(serializer.data)
-
-    elif request.method == 'PUT':
-        # Only allow updating own entries
-        if entry.user != request.user and not (request.user.is_admin_user() or request.user.is_manager_user()):
-            return Response({
-                'error': 'You can only update your own time entries'
-            }, status=status.HTTP_403_FORBIDDEN)
-
-        serializer = ManualTimeEntrySerializer(entry, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    elif request.method == 'DELETE':
-        # Only allow deleting own entries
-        if entry.user != request.user and not (request.user.is_admin_user() or request.user.is_manager_user()):
-            return Response({
-                'error': 'You can only delete your own time entries'
-            }, status=status.HTTP_403_FORBIDDEN)
-
-        entry.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-# ============================================================================
 # ENHANCED PRODUCTIVITY REPORT
 # ============================================================================
 
@@ -279,23 +190,24 @@ def enhanced_productivity_report(request):
     end_date = timezone.now()
     start_date = end_date - timedelta(days=days)
 
-    # Get computer activities
-    activities = Activity.objects.filter(
+    # Build shift-aware filter
+    shift_q, total_shift_seconds, has_shifts = ProductivityService._get_shift_filter(
+        target_user, start_date, end_date
+    )
+
+    # Get computer activities (filtered to shift hours if shifts exist)
+    activities_qs = Activity.objects.filter(
         session__user=target_user,
         start_time__gte=start_date
     )
+    if has_shifts and shift_q:
+        activities_qs = activities_qs.filter(shift_q)
+
+    activities = list(activities_qs)
 
     # Calculate weighted productivity for computer activities
     weighted_time = 0
     total_computer_duration = 0
-
-    for activity in activities:
-        duration = activity.duration or 0
-        weight = ProductivityService.get_app_weight(activity.process_name, target_user.position)
-        weighted_time += duration * weight
-        total_computer_duration += duration
-
-    # Derive approximate buckets for backwards compat display
     productive_time = 0
     neutral_time = 0
     non_productive_time = 0
@@ -303,6 +215,9 @@ def enhanced_productivity_report(request):
     for activity in activities:
         duration = activity.duration or 0
         weight = ProductivityService.get_app_weight(activity.process_name, target_user.position)
+        weighted_time += duration * weight
+        total_computer_duration += duration
+
         if weight >= 0.7:
             productive_time += duration
         elif weight <= 0.3:
@@ -327,15 +242,21 @@ def enhanced_productivity_report(request):
     # Calculate totals
     total_computer_time = productive_time + neutral_time + non_productive_time
     total_weighted_productive = weighted_time + manual_productive
-    total_time = total_computer_duration + manual_productive + manual_non_productive
 
-    # Calculate productivity score using weights
-    if total_time > 0:
-        productivity_score = round((total_weighted_productive / total_time) * 100, 2)
+    # Use shift hours as denominator if available, otherwise use tracked time
+    if has_shifts and total_shift_seconds > 0:
+        denominator = total_shift_seconds
+    else:
+        denominator = total_computer_duration + manual_productive + manual_non_productive
+
+    if denominator > 0:
+        productivity_score = round((total_weighted_productive / denominator) * 100, 2)
     else:
         productivity_score = 0
 
-    return Response({
+    total_time = total_computer_duration + manual_productive + manual_non_productive
+
+    response_data = {
         'computer_time': {
             'productive_hours': round(productive_time / 3600, 2),
             'neutral_hours': round(neutral_time / 3600, 2),
@@ -352,7 +273,15 @@ def enhanced_productivity_report(request):
             'total_hours': round(total_time / 3600, 2),
             'productivity_score': productivity_score,
         }
-    })
+    }
+
+    if has_shifts:
+        response_data['shift'] = {
+            'total_shift_hours': round(total_shift_seconds / 3600, 2),
+            'shift_utilization': round(total_time / total_shift_seconds * 100, 2) if total_shift_seconds > 0 else 0,
+        }
+
+    return Response(response_data)
 
 
 def get_app_category_for_user(process_name, department):

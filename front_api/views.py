@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from datetime import timedelta, datetime
 from tracker_api.models import User, Session, Activity, ApplicationUsageStats
+from tracker_api.services import ProductivityService
 from .serializers import (
     UserProfileSerializer, SessionListSerializer, ActivityListSerializer,
     DashboardStatsSerializer, ApplicationUsageSerializer,
@@ -132,9 +133,9 @@ def dashboard_overview(request):
     # Get recent sessions
     recent_sessions = sessions.order_by('-start_time')[:5]
 
-    # Calculate productivity score (simple algorithm based on active time)
-    # Assuming 8 hours work day, productivity score = (today_active_time / 8) * 100
-    productivity_score = min(round((today_active_time / 8) * 100, 2), 100)
+    # Calculate productivity score based on actual shift hours (fallback to 8hr)
+    shift_hours = ProductivityService.get_today_shift_hours(user)
+    productivity_score = min(round((today_active_time / shift_hours) * 100, 2), 100) if shift_hours > 0 else 0
 
     data = {
         'total_sessions': sessions.count(),

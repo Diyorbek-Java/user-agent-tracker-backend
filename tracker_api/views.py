@@ -7,11 +7,12 @@ from rest_framework.decorators import api_view, action
 from rest_framework.response import Response
 from datetime import datetime, timedelta
 import logging
-from .models import User, Session, Activity, ApplicationUsageStats, AppCategory
+from .models import User, Session, Activity, ApplicationUsageStats, AppCategory, WorkingShift, NetworkActivity
 from .serializers import (
     UserSerializer, SessionSerializer, ActivitySerializer,
     SessionWithActivitiesSerializer, ApplicationUsageStatsSerializer,
-    BulkDataUploadSerializer, AppCategorySerializer, AppCategoryCreateSerializer
+    BulkDataUploadSerializer, AppCategorySerializer, AppCategoryCreateSerializer,
+    WorkingShiftSerializer, BulkWorkingShiftSerializer
 )
 from .services import ProductivityService
 from django.utils.dateparse import parse_datetime
@@ -232,6 +233,49 @@ def upload_tracking_data(request):
         activities_created.append(activity.id)
         sessions_updated[session.id]['duration'] += duration
 
+    # Process network activities
+    network_activities_created = 0
+    for net_data in data.get('network_activities', []):
+        net_start = net_data['start_time']
+        if isinstance(net_start, str):
+            net_start = parse_datetime(net_start)
+
+        activity_date = net_start.date()
+        session = get_daily_session(activity_date, user, metric_token)
+
+        # Track session for duration update
+        if session.id not in sessions_updated:
+            sessions_updated[session.id] = {'session': session, 'duration': 0}
+
+        # Extract domain from URL if provided
+        domain = net_data.get('domain', '')
+        url = net_data.get('url')
+        if url and not domain:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc or url
+
+        net_duration = net_data.get('duration', 0)
+        net_end = net_data.get('end_time')
+        if net_duration == 0 and net_end:
+            if isinstance(net_end, str):
+                net_end = parse_datetime(net_end)
+            if net_start and net_end:
+                net_duration = int((net_end - net_start).total_seconds())
+
+        NetworkActivity.objects.create(
+            session=session,
+            metric_token=metric_token if not user else None,
+            url=url,
+            domain=domain,
+            page_title=net_data.get('page_title'),
+            browser_process=net_data.get('browser_process', 'unknown'),
+            start_time=net_start,
+            end_time=net_data.get('end_time'),
+            duration=net_duration,
+        )
+        network_activities_created += 1
+
     # Update durations for all affected sessions
     for session_data in sessions_updated.values():
         session = session_data['session']
@@ -259,6 +303,7 @@ def upload_tracking_data(request):
         'session_ids': session_ids,
         'sessions_count': len(session_ids),
         'activities_created': len(activities_created),
+        'network_activities_created': network_activities_created,
         'total_duration_seconds': total_duration_all,
         'total_duration_minutes': round(total_duration_all / 60, 2),
     }
@@ -394,7 +439,11 @@ def merge_metric_token(request):
     metric_activities = Activity.objects.filter(metric_token=metric_token)
     activities_updated = metric_activities.count()
 
-    logger.info(f"Merging {sessions_updated} sessions and {activities_updated} activities from token {metric_token[:8]}... to user {user.employee_id}")
+    # Find all network activities with metric_token
+    metric_network_activities = NetworkActivity.objects.filter(metric_token=metric_token)
+    network_activities_updated = metric_network_activities.count()
+
+    logger.info(f"Merging {sessions_updated} sessions, {activities_updated} activities, {network_activities_updated} network activities from token {metric_token[:8]}... to user {user.employee_id}")
 
     # Transfer sessions to user
     metric_sessions.update(user=user, metric_token=None)
@@ -404,11 +453,15 @@ def merge_metric_token(request):
     # For activities without sessions, we keep them but clear metric_token
     metric_activities.update(metric_token=None)
 
+    # Transfer network activities
+    metric_network_activities.update(metric_token=None)
+
     return Response({
         'status': 'success',
-        'message': f'Successfully merged {sessions_updated} sessions and {activities_updated} activities',
+        'message': f'Successfully merged {sessions_updated} sessions, {activities_updated} activities, and {network_activities_updated} network activities',
         'sessions_merged': sessions_updated,
         'activities_merged': activities_updated,
+        'network_activities_merged': network_activities_updated,
         'user_id': user.id,
         'employee_id': user.employee_id
     }, status=status.HTTP_200_OK)
@@ -675,3 +728,112 @@ def app_categories_suggestions(request):
     return Response({
         'uncategorized_apps': suggestions
     })
+
+
+# ============================================================================
+# WORKING SHIFT ENDPOINTS
+# ============================================================================
+
+@api_view(['GET'])
+def working_shifts_by_user(request, user_id):
+    """
+    GET: Get all working shifts for an employee (7 days).
+    Returns shifts ordered by day_of_week (Monday=0 to Sunday=6).
+    """
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    shifts = WorkingShift.objects.filter(user=user)
+    serializer = WorkingShiftSerializer(shifts, many=True)
+
+    # Calculate total weekly hours
+    total_weekly_hours = sum(s.get_duration_hours() for s in shifts)
+
+    return Response({
+        'user': {
+            'id': user.id,
+            'name': user.full_name,
+            'employee_id': user.employee_id,
+        },
+        'total_weekly_hours': round(total_weekly_hours, 2),
+        'shifts': serializer.data
+    })
+
+
+@api_view(['POST'])
+def working_shifts_set(request, user_id):
+    """
+    POST: Bulk set working shifts for an employee.
+    Replaces all existing shifts for the user with the provided ones.
+
+    Expected payload:
+    {
+        "shifts": [
+            {"day_of_week": 0, "start_time": "09:00", "end_time": "18:00", "is_day_off": false},
+            {"day_of_week": 1, "start_time": "10:00", "end_time": "19:00", "is_day_off": false},
+            {"day_of_week": 5, "is_day_off": true},
+            {"day_of_week": 6, "is_day_off": true}
+        ]
+    }
+    """
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = BulkWorkingShiftSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    shifts_data = serializer.validated_data['shifts']
+
+    # Delete existing shifts for days being set
+    days_to_set = [s['day_of_week'] for s in shifts_data]
+    WorkingShift.objects.filter(user=user, day_of_week__in=days_to_set).delete()
+
+    # Create new shifts
+    created_shifts = []
+    for shift_data in shifts_data:
+        shift = WorkingShift.objects.create(
+            user=user,
+            day_of_week=shift_data['day_of_week'],
+            start_time=shift_data.get('start_time'),
+            end_time=shift_data.get('end_time'),
+            is_day_off=shift_data.get('is_day_off', False),
+        )
+        created_shifts.append(shift)
+
+    all_shifts = WorkingShift.objects.filter(user=user)
+    total_weekly_hours = sum(s.get_duration_hours() for s in all_shifts)
+
+    return Response({
+        'status': 'success',
+        'message': f'Set {len(created_shifts)} working shifts for {user.full_name}',
+        'total_weekly_hours': round(total_weekly_hours, 2),
+        'shifts': WorkingShiftSerializer(all_shifts, many=True).data
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT', 'DELETE'])
+def working_shift_detail(request, pk):
+    """
+    PUT: Update a single working shift entry.
+    DELETE: Delete a single working shift entry.
+    """
+    try:
+        shift = WorkingShift.objects.get(pk=pk)
+    except WorkingShift.DoesNotExist:
+        return Response({'error': 'Working shift not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'PUT':
+        serializer = WorkingShiftSerializer(shift, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == 'DELETE':
+        shift.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from tracker_api.models import (
-    User, Session, Activity, ApplicationUsageStats,
+    User, Session, Activity, ApplicationUsageStats, NetworkActivity,
     AppCategory, DepartmentAppRule, ManualTimeEntry,
     Department, JobPosition, PositionAppWeight, ProductivitySettings
 )
@@ -191,6 +191,19 @@ class PositionAppWeightSerializer(serializers.ModelSerializer):
                   'app_process_name', 'weight', 'reason', 'created_at', 'updated_at',
                   'created_by', 'created_by_name']
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+
+
+class NetworkActivityListSerializer(serializers.ModelSerializer):
+    """Serializer for network activity list"""
+    duration_minutes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NetworkActivity
+        fields = ['id', 'url', 'domain', 'page_title', 'browser_process',
+                  'start_time', 'end_time', 'duration', 'duration_minutes']
+
+    def get_duration_minutes(self, obj):
+        return obj.get_duration_minutes()
 
 
 class ProductivitySettingsSerializer(serializers.ModelSerializer):

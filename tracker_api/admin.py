@@ -1,9 +1,10 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
-    User, Session, Activity, ApplicationUsageStats,
+    User, Session, Activity, ApplicationUsageStats, NetworkActivity,
     AppCategory, DepartmentAppRule, ManualTimeEntry,
-    Department, JobPosition, PositionAppWeight, ProductivitySettings
+    Department, JobPosition, PositionAppWeight, ProductivitySettings,
+    WorkingShift
 )
 
 
@@ -93,6 +94,15 @@ class ActivityAdmin(admin.ModelAdmin):
     ordering = ['-start_time']
 
 
+@admin.register(NetworkActivity)
+class NetworkActivityAdmin(admin.ModelAdmin):
+    list_display = ['id', 'session', 'domain', 'page_title', 'browser_process', 'start_time', 'get_duration_minutes']
+    list_filter = ['browser_process', 'domain', 'start_time']
+    search_fields = ['domain', 'url', 'page_title']
+    date_hierarchy = 'start_time'
+    ordering = ['-start_time']
+
+
 @admin.register(ApplicationUsageStats)
 class ApplicationUsageStatsAdmin(admin.ModelAdmin):
     list_display = ['user', 'process_name', 'date', 'get_duration_hours', 'switch_count']
@@ -136,6 +146,15 @@ class PositionAppWeightAdmin(admin.ModelAdmin):
     list_filter = ['position', 'weight', 'created_at']
     search_fields = ['position__title', 'app_category__display_name', 'app_category__process_name', 'reason']
     ordering = ['position', 'app_category']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(WorkingShift)
+class WorkingShiftAdmin(admin.ModelAdmin):
+    list_display = ['user', 'day_of_week', 'start_time', 'end_time', 'is_day_off', 'get_duration_hours']
+    list_filter = ['day_of_week', 'is_day_off', 'user']
+    search_fields = ['user__username', 'user__full_name', 'user__employee_id']
+    ordering = ['user', 'day_of_week']
     readonly_fields = ['created_at', 'updated_at']
 
 

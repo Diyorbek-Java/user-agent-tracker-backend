@@ -241,6 +241,37 @@ class Activity(models.Model):
         return 0
 
 
+class NetworkActivity(models.Model):
+    """Tracks website/URL visits detected from browser window titles"""
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='network_activities', null=True, blank=True)
+    metric_token = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    url = models.URLField(max_length=2000, null=True, blank=True)
+    domain = models.CharField(max_length=500, db_index=True)
+    page_title = models.CharField(max_length=500, null=True, blank=True)
+    browser_process = models.CharField(max_length=200, db_index=True)
+    start_time = models.DateTimeField(db_index=True)
+    end_time = models.DateTimeField(null=True, blank=True)
+    duration = models.IntegerField(default=0, help_text="Duration in seconds")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-start_time']
+        indexes = [
+            models.Index(fields=['session', '-start_time']),
+            models.Index(fields=['metric_token', '-start_time']),
+            models.Index(fields=['domain']),
+            models.Index(fields=['start_time']),
+        ]
+
+    def __str__(self):
+        return f"{self.domain} - {self.browser_process} at {self.start_time}"
+
+    def get_duration_minutes(self):
+        if self.duration:
+            return round(self.duration / 60, 2)
+        return 0
+
+
 class ApplicationUsageStats(models.Model):
     """Aggregated statistics for application usage per user per day"""
     user = models.ForeignKey('User', on_delete=models.CASCADE, related_name='app_stats')
@@ -419,6 +450,89 @@ class PositionAppWeight(models.Model):
 
     def __str__(self):
         return f"{self.position.title}: {self.app_category.display_name} = {self.weight}"
+
+
+class WorkingShift(models.Model):
+    """
+    Per-day working shift schedule for each employee.
+    Each employee can have different start/end times for each day of the week.
+    Example: Monday 9:00-18:00, Tuesday 10:00-19:00, Saturday is_day_off=True
+    """
+    MONDAY = 0
+    TUESDAY = 1
+    WEDNESDAY = 2
+    THURSDAY = 3
+    FRIDAY = 4
+    SATURDAY = 5
+    SUNDAY = 6
+
+    DAY_CHOICES = [
+        (MONDAY, 'Monday'),
+        (TUESDAY, 'Tuesday'),
+        (WEDNESDAY, 'Wednesday'),
+        (THURSDAY, 'Thursday'),
+        (FRIDAY, 'Friday'),
+        (SATURDAY, 'Saturday'),
+        (SUNDAY, 'Sunday'),
+    ]
+
+    user = models.ForeignKey(
+        'User',
+        on_delete=models.CASCADE,
+        related_name='working_shifts',
+        help_text="Employee this shift belongs to"
+    )
+    day_of_week = models.IntegerField(
+        choices=DAY_CHOICES,
+        help_text="Day of the week (0=Monday, 6=Sunday)"
+    )
+    start_time = models.TimeField(
+        null=True,
+        blank=True,
+        help_text="Shift start time (e.g. 09:00)"
+    )
+    end_time = models.TimeField(
+        null=True,
+        blank=True,
+        help_text="Shift end time (e.g. 18:00)"
+    )
+    is_day_off = models.BooleanField(
+        default=False,
+        help_text="If True, employee does not work this day"
+    )
+    lunch_break_minutes = models.IntegerField(
+        default=60,
+        help_text="Lunch break duration in minutes (deducted from working hours)"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['user', 'day_of_week']
+        ordering = ['user', 'day_of_week']
+        verbose_name = 'Working Shift'
+        verbose_name_plural = 'Working Shifts'
+
+    def __str__(self):
+        day_name = self.get_day_of_week_display()
+        if self.is_day_off:
+            return f"{self.user.full_name} - {day_name}: Day Off"
+        return f"{self.user.full_name} - {day_name}: {self.start_time} to {self.end_time}"
+
+    def get_duration_hours(self):
+        """Get shift duration in hours (lunch break deducted)"""
+        if self.is_day_off or not self.start_time or not self.end_time:
+            return 0
+        from datetime import datetime, timedelta
+        start_dt = datetime.combine(datetime.today(), self.start_time)
+        end_dt = datetime.combine(datetime.today(), self.end_time)
+        if end_dt < start_dt:
+            end_dt += timedelta(days=1)
+        total_seconds = (end_dt - start_dt).total_seconds()
+        # Deduct lunch break
+        lunch_seconds = (self.lunch_break_minutes or 0) * 60
+        net_seconds = max(total_seconds - lunch_seconds, 0)
+        return round(net_seconds / 3600, 2)
 
 
 class ProductivitySettings(models.Model):

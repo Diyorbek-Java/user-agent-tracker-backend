@@ -10,7 +10,9 @@ from .views import (
     productivity_dashboard, productivity_employees_list,
     productivity_employee_detail, productivity_employee_apps,
     # App category management endpoints
-    app_categories_list, app_category_detail, app_categories_suggestions
+    app_categories_list, app_category_detail, app_categories_suggestions,
+    # Working shift endpoints
+    working_shifts_by_user, working_shifts_set, working_shift_detail,
 )
 from .auth_views import (
     login_view, set_password_view, invite_staff_view,
@@ -68,4 +70,9 @@ urlpatterns = [
     path('app-categories/', app_categories_list, name='app-categories-list'),
     path('app-categories/<int:pk>/', app_category_detail, name='app-category-detail'),
     path('app-categories/suggestions/', app_categories_suggestions, name='app-categories-suggestions'),
+
+    # Working Shift endpoints
+    path('users/<int:user_id>/working-shifts/', working_shifts_by_user, name='working-shifts-by-user'),
+    path('users/<int:user_id>/working-shifts/set/', working_shifts_set, name='working-shifts-set'),
+    path('working-shifts/<int:pk>/', working_shift_detail, name='working-shift-detail'),
 ]

@@ -2,6 +2,9 @@ from django.urls import path
 from . import views
 from . import productivity_views
 from . import organization_views
+from . import network_views
+from . import manual_time_views
+from . import shift_views
 
 urlpatterns = [
     # User profile endpoints
@@ -34,8 +37,8 @@ urlpatterns = [
     path('department-rules/<int:pk>/', productivity_views.department_app_rule_detail, name='department-rule-detail'),
 
     # Manual time entry endpoints
-    path('manual-time/', productivity_views.manual_time_entries_list, name='manual-time-list'),
-    path('manual-time/<int:pk>/', productivity_views.manual_time_entry_detail, name='manual-time-detail'),
+    path('manual-time/', manual_time_views.manual_time_entries_list, name='manual-time-list'),
+    path('manual-time/<int:pk>/', manual_time_views.manual_time_entry_detail, name='manual-time-detail'),
 
     # Enhanced productivity report
     path('enhanced-productivity/', productivity_views.enhanced_productivity_report, name='enhanced-productivity'),
@@ -46,4 +49,14 @@ urlpatterns = [
 
     # Productivity settings endpoint
     path('productivity-settings/', productivity_views.productivity_settings_view, name='productivity-settings'),
+
+    # Working shift endpoints
+    path('shifts/', shift_views.all_users_shifts, name='all-users-shifts'),
+    path('shifts/<int:user_id>/', shift_views.user_shifts, name='user-shifts'),
+    path('shifts/<int:user_id>/set/', shift_views.set_user_shifts, name='set-user-shifts'),
+
+    # Network activity endpoints
+    path('network-activities/', network_views.network_activities, name='network-activities'),
+    path('network/domains/', network_views.network_domain_summary, name='network-domain-summary'),
+    path('network/top-sites/', network_views.network_top_sites, name='network-top-sites'),
 ]

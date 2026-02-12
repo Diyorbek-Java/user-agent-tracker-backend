@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from .models import (
     User, Activity, AppCategory, DepartmentAppRule, Session,
-    PositionAppWeight, ProductivitySettings
+    PositionAppWeight, ProductivitySettings, WorkingShift
 )
 
 
@@ -82,18 +82,81 @@ class ProductivityService:
             return settings.default_weight  # NEUTRAL
 
     @staticmethod
+    def _get_shift_filter(user, date_from, date_to):
+        """
+        Build a Q filter and total shift seconds for a user's working shifts
+        within a date range. Only activities within shift hours will be counted.
+        Returns: (Q_filter, total_shift_seconds, has_shifts)
+        """
+        shifts = {s.day_of_week: s for s in WorkingShift.objects.filter(user=user)}
+        if not shifts:
+            return Q(), 0, False
+
+        shift_q = Q()
+        total_shift_seconds = 0
+
+        current_date = date_from.date() if hasattr(date_from, 'date') else date_from
+        end_date = date_to.date() if hasattr(date_to, 'date') else date_to
+
+        while current_date <= end_date:
+            dow = current_date.weekday()  # 0=Monday
+            shift = shifts.get(dow)
+
+            if shift and not shift.is_day_off and shift.start_time and shift.end_time:
+                day_shift_start = timezone.make_aware(
+                    timezone.datetime.combine(current_date, shift.start_time)
+                )
+                day_shift_end = timezone.make_aware(
+                    timezone.datetime.combine(current_date, shift.end_time)
+                )
+                # Handle overnight shifts
+                if day_shift_end <= day_shift_start:
+                    day_shift_end += timedelta(days=1)
+
+                shift_q |= Q(start_time__gte=day_shift_start, start_time__lt=day_shift_end)
+                gross_seconds = int((day_shift_end - day_shift_start).total_seconds())
+                # Deduct lunch break from working hours
+                lunch_seconds = (shift.lunch_break_minutes or 0) * 60
+                total_shift_seconds += max(gross_seconds - lunch_seconds, 0)
+
+            current_date += timedelta(days=1)
+
+        return shift_q, total_shift_seconds, True
+
+    @staticmethod
+    def get_today_shift_hours(user):
+        """Get shift duration in hours for today. Returns 8 as fallback."""
+        today_dow = timezone.now().weekday()
+        shift = WorkingShift.objects.filter(user=user, day_of_week=today_dow).first()
+        if shift and not shift.is_day_off and shift.start_time and shift.end_time:
+            return shift.get_duration_hours()
+        return 8  # fallback
+
+    @staticmethod
     def calculate_user_productivity(user: User, date_from, date_to, position=None) -> dict:
         """
         Calculate productivity metrics for a single user within a date range.
-        Uses weighted scoring: each app's time is multiplied by its weight (0.0-1.0).
-        Score = weighted_productive_seconds / total_seconds * 100
+        Only activities within the user's working shift hours are counted.
+        Score = weighted_productive_seconds / total_shift_seconds * 100
+        Falls back to total_tracked if no shifts are defined.
         """
-        # Get all activities for user in date range
-        activities = Activity.objects.filter(
+        # Build shift-aware filter
+        shift_q, total_shift_seconds, has_shifts = ProductivityService._get_shift_filter(
+            user, date_from, date_to
+        )
+
+        # Base queryset
+        base_qs = Activity.objects.filter(
             session__user=user,
             start_time__gte=date_from,
             start_time__lte=date_to
-        ).values('process_name').annotate(
+        )
+
+        # Apply shift filter if shifts exist
+        if has_shifts and shift_q:
+            base_qs = base_qs.filter(shift_q)
+
+        activities = base_qs.values('process_name').annotate(
             total_duration=Sum('duration'),
             count=Count('id')
         )
@@ -118,9 +181,10 @@ class ProductivityService:
             weighted_seconds += duration * weight
             total_seconds += duration
 
-        # Calculate productivity score using weights
-        if total_seconds > 0:
-            productivity_score = round((weighted_seconds / total_seconds) * 100, 1)
+        # Calculate productivity score against shift hours (or tracked hours as fallback)
+        denominator = total_shift_seconds if (has_shifts and total_shift_seconds > 0) else total_seconds
+        if denominator > 0:
+            productivity_score = round((weighted_seconds / denominator) * 100, 1)
         else:
             productivity_score = 0.0
 
@@ -164,6 +228,7 @@ class ProductivityService:
             'neutral_hours': round(neutral_seconds / 3600, 2),
             'non_productive_hours': round(non_productive_seconds / 3600, 2),
             'total_tracked_hours': round(total_seconds / 3600, 2),
+            'total_shift_hours': round(total_shift_seconds / 3600, 2) if has_shifts else None,
             'productivity_score': productivity_score,
             'top_apps': top_apps
         }
@@ -312,7 +377,7 @@ class ProductivityService:
 
     @staticmethod
     def get_user_daily_trend(user: User, date_from, date_to) -> list:
-        """Get daily productivity trend for a user"""
+        """Get daily productivity trend for a user (shift-aware)"""
         trends = []
         current_date = date_from.date() if hasattr(date_from, 'date') else date_from
         end_date = date_to.date() if hasattr(date_to, 'date') else date_to
@@ -330,11 +395,14 @@ class ProductivityService:
             )
 
             if day_productivity['total_tracked_hours'] > 0:
-                trends.append({
+                entry = {
                     'date': current_date.isoformat(),
                     'score': day_productivity['productivity_score'],
-                    'hours': day_productivity['total_tracked_hours']
-                })
+                    'hours': day_productivity['total_tracked_hours'],
+                }
+                if day_productivity.get('total_shift_hours') is not None:
+                    entry['shift_hours'] = day_productivity['total_shift_hours']
+                trends.append(entry)
 
             current_date += timedelta(days=1)
 
