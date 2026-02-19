@@ -2,6 +2,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 from tracker_api.models import User, WorkingShift
 from tracker_api.serializers import WorkingShiftSerializer, BulkWorkingShiftSerializer
 
@@ -15,8 +16,8 @@ def user_shifts(request, user_id):
     """
     requesting_user = request.user
 
-    # Permission check
-    if not (requesting_user.is_admin_user() or requesting_user.is_manager_user()):
+    if not (requesting_user.is_admin_user() or requesting_user.is_manager_user()
+            or requesting_user.is_org_manager_user() or requesting_user.is_org_admin_user()):
         if requesting_user.id != user_id:
             return Response(
                 {'error': 'You do not have permission to view other users\' shifts'},
@@ -44,6 +45,7 @@ def user_shifts(request, user_id):
     })
 
 
+@extend_schema(request=BulkWorkingShiftSerializer)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def set_user_shifts(request, user_id):
@@ -59,7 +61,8 @@ def set_user_shifts(request, user_id):
         ]
     }
     """
-    if not (request.user.is_admin_user() or request.user.is_manager_user()):
+    if not (request.user.is_admin_user() or request.user.is_manager_user()
+            or request.user.is_org_manager_user() or request.user.is_org_admin_user()):
         return Response(
             {'error': 'Only administrators and managers can set working shifts'},
             status=status.HTTP_403_FORBIDDEN

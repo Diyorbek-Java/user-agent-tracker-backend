@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 from django.db.models import Sum, Q
 from django.utils import timezone
 from datetime import timedelta
@@ -26,6 +27,7 @@ from .serializers import (
 # APP CATEGORIZATION ENDPOINTS
 # ============================================================================
 
+@extend_schema(methods=['POST'], request=AppCategorySerializer)
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def app_categories_list(request):
@@ -52,6 +54,7 @@ def app_categories_list(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(methods=['PUT'], request=AppCategorySerializer)
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def app_category_detail(request, pk):
@@ -88,6 +91,7 @@ def app_category_detail(request, pk):
             return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(methods=['POST'], request=DepartmentAppRuleSerializer)
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def department_app_rules_list(request):
@@ -120,6 +124,7 @@ def department_app_rules_list(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(methods=['PUT'], request=DepartmentAppRuleSerializer)
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def department_app_rule_detail(request, pk):
@@ -215,6 +220,11 @@ def enhanced_productivity_report(request):
     for activity in activities:
         duration = activity.duration or 0
         weight = ProductivityService.get_app_weight(activity.process_name, target_user.position)
+
+        # None means no weight configured for this position — skip entirely
+        if weight is None:
+            continue
+
         weighted_time += duration * weight
         total_computer_duration += duration
 
@@ -293,6 +303,7 @@ def get_app_category_for_user(process_name, department):
 # POSITION APP WEIGHTS ENDPOINTS
 # ============================================================================
 
+@extend_schema(methods=['POST'], request=PositionAppWeightSerializer)
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def position_weights_list(request):
@@ -321,6 +332,7 @@ def position_weights_list(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(methods=['PUT'], request=PositionAppWeightSerializer)
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def position_weight_detail(request, pk):
@@ -360,6 +372,7 @@ def position_weight_detail(request, pk):
 # PRODUCTIVITY SETTINGS ENDPOINT
 # ============================================================================
 
+@extend_schema(methods=['PUT'], request=ProductivitySettingsSerializer)
 @api_view(['GET', 'PUT'])
 @permission_classes([IsAuthenticated])
 def productivity_settings_view(request):

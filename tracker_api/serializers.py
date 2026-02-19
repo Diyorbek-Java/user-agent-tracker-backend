@@ -187,31 +187,52 @@ class WorkingShiftSerializer(serializers.ModelSerializer):
         return data
 
 
+class SingleShiftInputSerializer(serializers.Serializer):
+    """Input schema for a single day shift entry"""
+    day_of_week = serializers.IntegerField(
+        min_value=0, max_value=6,
+        help_text="0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday"
+    )
+    start_time = serializers.TimeField(
+        required=False, allow_null=True,
+        help_text="Work start time in HH:MM format, e.g. 09:00"
+    )
+    end_time = serializers.TimeField(
+        required=False, allow_null=True,
+        help_text="Work end time in HH:MM format, e.g. 18:00"
+    )
+    is_day_off = serializers.BooleanField(
+        default=False,
+        help_text="Set to true for days off (weekend, holiday). start_time/end_time not required."
+    )
+    lunch_break_minutes = serializers.IntegerField(
+        default=60, required=False, min_value=0,
+        help_text="Lunch break duration in minutes (default 60)"
+    )
+
+    def validate(self, data):
+        if not data.get('is_day_off', False):
+            if not data.get('start_time') or not data.get('end_time'):
+                raise serializers.ValidationError(
+                    "start_time and end_time are required when is_day_off is false."
+                )
+        return data
+
+
 class BulkWorkingShiftSerializer(serializers.Serializer):
-    """Serializer for setting all 7 days of working shifts at once"""
+    """Serializer for bulk-setting all working shifts for a user at once"""
     shifts = serializers.ListField(
-        child=serializers.DictField(),
+        child=SingleShiftInputSerializer(),
         min_length=1,
         max_length=7,
-        help_text="List of shift objects with day_of_week, start_time, end_time, is_day_off"
+        help_text="List of shift entries. You can submit 1-7 days. Any day not included is left unchanged."
     )
 
     def validate_shifts(self, value):
         days_seen = set()
         for shift in value:
             day = shift.get('day_of_week')
-            if day is None:
-                raise serializers.ValidationError("Each shift must have a day_of_week (0-6).")
-            if not isinstance(day, int) or day < 0 or day > 6:
-                raise serializers.ValidationError(f"day_of_week must be 0-6, got {day}.")
             if day in days_seen:
                 raise serializers.ValidationError(f"Duplicate day_of_week: {day}.")
             days_seen.add(day)
-
-            is_day_off = shift.get('is_day_off', False)
-            if not is_day_off:
-                if not shift.get('start_time') or not shift.get('end_time'):
-                    raise serializers.ValidationError(
-                        f"start_time and end_time required for day {day} when not a day off."
-                    )
         return value

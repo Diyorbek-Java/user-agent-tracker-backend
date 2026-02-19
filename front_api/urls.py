@@ -27,11 +27,16 @@ urlpatterns = [
     path('admin/users/', views.all_users_summary, name='all-users-summary'),
     path('admin/users/<int:user_id>/', views.user_detail_report, name='user-detail-report'),
 
-    # Organization endpoints (Department & Job Position)
+    # Organization endpoints
+    path('organizations/', organization_views.organizations_list, name='organizations-list'),
+    path('organizations/<int:pk>/', organization_views.organization_detail, name='organization-detail'),
     path('departments/', organization_views.departments_list, name='departments-list'),
     path('departments/<int:pk>/', organization_views.department_detail, name='department-detail'),
     path('positions/', organization_views.job_positions_list, name='positions-list'),
     path('positions/<int:pk>/', organization_views.job_position_detail, name='position-detail'),
+    path('org-users/', organization_views.users_list_for_org, name='org-users-list'),
+    path('org-users/<int:user_id>/assign/', organization_views.assign_user, name='assign-user'),
+    path('organizations/<int:pk>/assign-admin/', organization_views.assign_org_admin, name='assign-org-admin'),
 
     # App categorization endpoints
     path('app-categories/', productivity_views.app_categories_list, name='app-categories-list'),

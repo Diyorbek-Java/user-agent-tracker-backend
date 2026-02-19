@@ -97,6 +97,7 @@ def login_view(request):
                 'department_id': user.department.id if user.department else None,
                 'position': user.position.title if user.position else None,
                 'position_id': user.position.id if user.position else None,
+                'managed_organization': user.managed_organization_id,
             }
         })
 
@@ -227,7 +228,7 @@ def invite_staff_view(request):
     role = request.data.get('role', User.EMPLOYEE)
 
     # Role-based validation
-    if request.user.is_manager_user() and role != User.EMPLOYEE:
+    if request.user.is_manager_user() and role not in [User.EMPLOYEE]:
         return Response({
             'success': False,
             'error': 'Managers can only create Employee accounts'
@@ -237,6 +238,20 @@ def invite_staff_view(request):
         return Response({
             'success': False,
             'error': 'Cannot create Admin accounts through this endpoint'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    # Only Admin can create ORG_MANAGER accounts
+    if not request.user.is_admin_user() and role == User.ORG_MANAGER:
+        return Response({
+            'success': False,
+            'error': 'Only administrators can create Organization Manager accounts'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    # ORG_MANAGER can create ADMINISTRATION accounts; others (except Admin) cannot
+    if role == User.ORG_ADMIN and not (request.user.is_admin_user() or request.user.is_org_manager_user()):
+        return Response({
+            'success': False,
+            'error': 'Only administrators and Organization Managers can create Organization Admin accounts'
         }, status=status.HTTP_403_FORBIDDEN)
 
     # Validation

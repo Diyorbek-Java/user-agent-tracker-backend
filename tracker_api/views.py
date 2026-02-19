@@ -236,32 +236,40 @@ def upload_tracking_data(request):
     # Process network activities
     network_activities_created = 0
     for net_data in data.get('network_activities', []):
+        url = net_data.get('url') or ''
+        domain = net_data.get('domain', '') or ''
+
+        # Skip entries with no real URL and no meaningful domain — garbage data
+        if not url and (not domain or domain.lower() == 'unknown'):
+            continue
+
         net_start = net_data['start_time']
         if isinstance(net_start, str):
             net_start = parse_datetime(net_start)
 
-        activity_date = net_start.date()
-        session = get_daily_session(activity_date, user, metric_token)
-
-        # Track session for duration update
-        if session.id not in sessions_updated:
-            sessions_updated[session.id] = {'session': session, 'duration': 0}
-
-        # Extract domain from URL if provided
-        domain = net_data.get('domain', '')
-        url = net_data.get('url')
-        if url and not domain:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            domain = parsed.netloc or url
-
-        net_duration = net_data.get('duration', 0)
         net_end = net_data.get('end_time')
+        net_duration = net_data.get('duration', 0) or 0
         if net_duration == 0 and net_end:
             if isinstance(net_end, str):
                 net_end = parse_datetime(net_end)
             if net_start and net_end:
                 net_duration = int((net_end - net_start).total_seconds())
+
+        # Skip zero-duration entries — user switched away instantly, not meaningful
+        if net_duration == 0:
+            continue
+
+        activity_date = net_start.date()
+        session = get_daily_session(activity_date, user, metric_token)
+
+        if session.id not in sessions_updated:
+            sessions_updated[session.id] = {'session': session, 'duration': 0}
+
+        # Extract domain from URL if not provided
+        if url and not domain:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc or url
 
         NetworkActivity.objects.create(
             session=session,

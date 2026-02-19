@@ -2,21 +2,49 @@ from rest_framework import serializers
 from tracker_api.models import (
     User, Session, Activity, ApplicationUsageStats, NetworkActivity,
     AppCategory, DepartmentAppRule, ManualTimeEntry,
-    Department, JobPosition, PositionAppWeight, ProductivitySettings
+    Organization, Department, JobPosition, PositionAppWeight, ProductivitySettings
 )
 from django.db.models import Sum, Count, F
 from django.utils import timezone
 from datetime import timedelta
 
 
+class OrganizationSerializer(serializers.ModelSerializer):
+    """Serializer for Organization model"""
+    head_name = serializers.CharField(source='head_of_organization.full_name', read_only=True)
+    department_count = serializers.SerializerMethodField()
+    admin_user_id = serializers.SerializerMethodField()
+    admin_user_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Organization
+        fields = ['id', 'name', 'description', 'head_of_organization', 'head_name',
+                  'is_active', 'department_count', 'admin_user_id', 'admin_user_name',
+                  'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_department_count(self, obj):
+        return obj.departments.filter(is_active=True).count()
+
+    def get_admin_user_id(self, obj):
+        admin = obj.admin_users.filter(role='ADMINISTRATION').first()
+        return admin.id if admin else None
+
+    def get_admin_user_name(self, obj):
+        admin = obj.admin_users.filter(role='ADMINISTRATION').first()
+        return admin.full_name if admin else None
+
+
 class DepartmentSerializer(serializers.ModelSerializer):
     """Serializer for Department model"""
     head_name = serializers.CharField(source='head_of_department.full_name', read_only=True)
+    organization_name = serializers.CharField(source='organization.name', read_only=True)
     employee_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
-        fields = ['id', 'name', 'description', 'head_of_department', 'head_name',
+        fields = ['id', 'name', 'description', 'organization', 'organization_name',
+                  'head_of_department', 'head_name',
                   'is_active', 'employee_count', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 

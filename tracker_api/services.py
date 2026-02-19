@@ -46,34 +46,40 @@ class ProductivityService:
         return AppCategory.NEUTRAL
 
     @staticmethod
-    def get_app_weight(process_name: str, position=None) -> float:
+    def get_app_weight(process_name: str, position=None):
         """
         Get the productivity weight (0.0-1.0) for an application.
-        Resolution order:
-        1. Position-specific weight (PositionAppWeight)
-        2. Fall back to category-based default (PRODUCTIVE=1.0, NON_PRODUCTIVE=0.0, NEUTRAL=default_weight)
-        3. Uncategorized apps use configurable default_weight
+        Returns None if the app should be excluded from scoring.
+
+        If a position is set:
+          - Use the explicit PositionAppWeight if one is configured.
+          - Return None if NO weight is configured — the app is NOT scored.
+            (Every position must configure its own weights manually.)
+
+        If no position:
+          - PRODUCTIVE = 1.0, NON_PRODUCTIVE = 0.0, NEUTRAL = default_weight
+          - Uncategorized apps = default_weight
         """
         settings = ProductivityService._get_settings()
 
-        # Find the AppCategory for this process
         app_cat = AppCategory.objects.filter(
             Q(process_name__iexact=process_name) |
             Q(process_name__iexact=process_name.replace('.exe', ''))
         ).first()
 
-        if not app_cat:
-            return settings.default_weight  # uncategorized apps
-
-        # Check position-specific weight
         if position:
+            if not app_cat:
+                return None  # uncategorized + position → not configured, skip
             pos_weight = PositionAppWeight.objects.filter(
                 position=position, app_category=app_cat
             ).first()
             if pos_weight:
                 return pos_weight.weight
+            return None  # no explicit weight for this position → skip
 
-        # Fall back to category-based default
+        # No position assigned — use category-based fallback
+        if not app_cat:
+            return settings.default_weight
         if app_cat.category == 'PRODUCTIVE':
             return 1.0
         elif app_cat.category == 'NON_PRODUCTIVE':
@@ -170,7 +176,11 @@ class ProductivityService:
             duration = activity['total_duration'] or 0
             count = activity['count'] or 0
             weight = ProductivityService.get_app_weight(process_name, position)
-            # Keep category for display purposes
+
+            # None means no weight configured for this position — skip entirely
+            if weight is None:
+                continue
+
             category = ProductivityService.get_app_category(process_name, user.department)
 
             app_durations[process_name]['duration'] = duration

@@ -6,6 +6,33 @@ import secrets
 import string
 
 
+class Organization(models.Model):
+    """
+    Top-level organization entity.
+    An organization has a head (one user) and contains multiple departments.
+    """
+    name = models.CharField(max_length=200, unique=True, db_index=True)
+    description = models.TextField(blank=True, null=True)
+    head_of_organization = models.ForeignKey(
+        'User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='organizations_headed',
+        help_text="Head / CEO of this organization"
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name_plural = 'Organizations'
+
+    def __str__(self):
+        return self.name
+
+
 class Department(models.Model):
     """
     Department/Team model
@@ -13,6 +40,14 @@ class Department(models.Model):
     """
     name = models.CharField(max_length=100, unique=True, db_index=True)
     description = models.TextField(blank=True, null=True, help_text="Department description and responsibilities")
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='departments',
+        help_text="Organization this department belongs to"
+    )
     head_of_department = models.ForeignKey(
         'User',
         on_delete=models.SET_NULL,
@@ -65,11 +100,15 @@ class User(AbstractUser):
     ADMIN = 'ADMIN'
     MANAGER = 'MANAGER'
     EMPLOYEE = 'EMPLOYEE'
+    ORG_MANAGER = 'ORG_MANAGER'
+    ORG_ADMIN = 'ORG_ADMIN'
 
     ROLE_CHOICES = [
         (ADMIN, 'Administrator'),
         (MANAGER, 'Manager'),
         (EMPLOYEE, 'Employee'),
+        (ORG_MANAGER, 'Organization Manager'),
+        (ORG_ADMIN, 'Organization Admin'),
     ]
 
     # User role and employee details
@@ -91,6 +130,14 @@ class User(AbstractUser):
         blank=True,
         related_name='employees',
         help_text="Employee's job position"
+    )
+    managed_organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='admin_users',
+        help_text="Organization this user administers (only for ADMINISTRATION role)"
     )
     computer_name = models.CharField(max_length=100, blank=True, null=True)
 
@@ -169,6 +216,14 @@ class User(AbstractUser):
     def is_manager_user(self):
         """Check if user is a manager"""
         return self.role == self.MANAGER
+
+    def is_org_manager_user(self):
+        """Check if user is an organization manager (org-only access)"""
+        return self.role == self.ORG_MANAGER
+
+    def is_org_admin_user(self):
+        """Check if user is an org admin (scoped to one organization)"""
+        return self.role == self.ORG_ADMIN
 
 
 class Session(models.Model):

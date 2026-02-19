@@ -2,10 +2,12 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 from tracker_api.models import ManualTimeEntry
 from .serializers import ManualTimeEntrySerializer
 
 
+@extend_schema(methods=['POST'], request=ManualTimeEntrySerializer)
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def manual_time_entries_list(request):
@@ -43,6 +45,7 @@ def manual_time_entries_list(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(methods=['PUT'], request=ManualTimeEntrySerializer)
 @api_view(['GET', 'PUT', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def manual_time_entry_detail(request, pk):
