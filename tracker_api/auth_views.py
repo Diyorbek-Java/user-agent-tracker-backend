@@ -9,7 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 
-from .models import User
+from .models import User, Department, JobPosition
 
 
 @api_view(['POST'])
@@ -201,8 +201,29 @@ def invite_staff_view(request):
     email = request.data.get('email', '').lower()
     full_name = request.data.get('full_name')
     employee_id = request.data.get('employee_id')
-    department = request.data.get('department', '')
-    position = request.data.get('position', '')
+    department_id = request.data.get('department', None)
+    position_id = request.data.get('position', None)
+
+    # Look up ForeignKey instances
+    department = None
+    if department_id:
+        try:
+            department = Department.objects.get(pk=department_id)
+        except (Department.DoesNotExist, ValueError):
+            return Response({
+                'success': False,
+                'error': 'Invalid department'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    position = None
+    if position_id:
+        try:
+            position = JobPosition.objects.get(pk=position_id)
+        except (JobPosition.DoesNotExist, ValueError):
+            return Response({
+                'success': False,
+                'error': 'Invalid position'
+            }, status=status.HTTP_400_BAD_REQUEST)
     role = request.data.get('role', User.EMPLOYEE)
 
     # Role-based validation

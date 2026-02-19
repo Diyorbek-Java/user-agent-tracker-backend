@@ -19,6 +19,9 @@ urlpatterns = [
     path('productivity/', views.productivity_report, name='productivity-report'),
     path('app-usage/', views.application_usage_stats, name='app-usage-stats'),
 
+    # Day app summary (click on chart bar drill-down)
+    path('day-app-summary/', views.day_app_summary, name='day-app-summary'),
+
     # Admin endpoints
     path('users/list/', views.user_list, name='user-list'),
     path('admin/users/', views.all_users_summary, name='all-users-summary'),

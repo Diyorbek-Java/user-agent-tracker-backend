@@ -362,6 +362,51 @@ def application_usage_stats(request):
     return Response(serializer.data)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def day_app_summary(request):
+    """
+    Return per-app duration totals for a specific employee on a specific day.
+
+    Query params:
+    - date      (required) : ISO date, e.g. 2026-02-15
+    - user_id   (optional) : For ADMIN/MANAGER to view another user's data
+
+    Response:
+    [
+      { "process_name": "idea64.exe", "total_seconds": 6342, "session_count": 4 },
+      ...
+    ]
+    sorted by total_seconds descending.
+    """
+    user, error = get_target_user(request)
+    if error:
+        return error
+
+    date_str = request.GET.get('date')
+    if not date_str:
+        return Response({'error': 'date parameter is required (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        target_date = datetime.fromisoformat(date_str).date()
+    except ValueError:
+        return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Aggregate all activities for that user on that exact calendar day
+    rows = (
+        Activity.objects
+        .filter(session__user=user, start_time__date=target_date)
+        .values('process_name')
+        .annotate(
+            total_seconds=Sum('duration'),
+            session_count=Count('session', distinct=True)
+        )
+        .order_by('-total_seconds')
+    )
+
+    return Response(list(rows))
+
+
 # Admin-only endpoints
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
