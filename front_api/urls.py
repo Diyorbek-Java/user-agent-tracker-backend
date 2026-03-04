@@ -68,4 +68,7 @@ urlpatterns = [
     path('network/domains/', network_views.network_domain_summary, name='network-domain-summary'),
     path('network/top-sites/', network_views.network_top_sites, name='network-top-sites'),
     path('network/daily-browsers/', network_views.network_daily_browser, name='network-daily-browsers'),
+
+    # Agent installer download (public)
+    path('download/agent/', views.download_agent, name='download-agent'),
 ]

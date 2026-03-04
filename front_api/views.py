@@ -5,7 +5,10 @@ from rest_framework import status
 from django.db.models import Sum, Count, F, Q, Avg
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from django.http import FileResponse, Http404
 from datetime import timedelta, datetime
+import os
+from decouple import config
 from tracker_api.models import User, Session, Activity, ApplicationUsageStats
 from tracker_api.services import ProductivityService
 from .serializers import (
@@ -546,3 +549,14 @@ def user_detail_report(request, user_id):
     }
 
     return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_agent(request):
+    exe_path = config('AGENT_EXE_PATH', default='')
+    if not exe_path or not os.path.isfile(exe_path):
+        raise Http404('Agent installer not available')
+    filename = os.path.basename(exe_path)
+    response = FileResponse(open(exe_path, 'rb'), as_attachment=True, filename=filename)
+    return response
