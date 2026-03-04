@@ -2,6 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db.models import Sum, Count
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 from datetime import timedelta
 from tracker_api.models import NetworkActivity
@@ -167,4 +168,63 @@ def network_top_sites(request):
         'total_browsing_hours': round(total_seconds / 3600, 2),
         'top_sites': top_sites_list,
         'browser_stats': browser_list
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def network_daily_browser(request):
+    """
+    Get per-day per-browser usage breakdown.
+    Query params:
+    - user_id (optional): For ADMIN/MANAGER to view specific user's data
+    - days: number of days to include (default: 7)
+    - browser: filter by browser process name (optional)
+    """
+    user, error = get_target_user(request)
+    if error:
+        return error
+
+    days = int(request.GET.get('days', 7))
+    browser_filter = request.GET.get('browser', '')
+    date_from = timezone.now() - timedelta(days=days)
+
+    qs = NetworkActivity.objects.filter(
+        session__user=user,
+        start_time__gte=date_from
+    )
+
+    if browser_filter:
+        qs = qs.filter(browser_process__icontains=browser_filter)
+
+    daily_stats = qs.annotate(
+        date=TruncDate('start_time')
+    ).values('date', 'browser_process').annotate(
+        total_duration=Sum('duration'),
+        visit_count=Count('id')
+    ).order_by('-date', '-total_duration')
+
+    # Distinct browsers for dropdown
+    available_browsers = list(
+        NetworkActivity.objects.filter(
+            session__user=user,
+            start_time__gte=date_from
+        ).values_list('browser_process', flat=True).distinct()
+    )
+
+    results = []
+    for item in daily_stats:
+        results.append({
+            'date': item['date'].isoformat() if item['date'] else None,
+            'browser': item['browser_process'],
+            'total_duration': item['total_duration'] or 0,
+            'total_duration_hours': round((item['total_duration'] or 0) / 3600, 2),
+            'visit_count': item['visit_count'],
+        })
+
+    return Response({
+        'days': days,
+        'browser_filter': browser_filter,
+        'available_browsers': available_browsers,
+        'results': results,
     })

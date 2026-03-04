@@ -67,4 +67,5 @@ urlpatterns = [
     path('network-activities/', network_views.network_activities, name='network-activities'),
     path('network/domains/', network_views.network_domain_summary, name='network-domain-summary'),
     path('network/top-sites/', network_views.network_top_sites, name='network-top-sites'),
+    path('network/daily-browsers/', network_views.network_daily_browser, name='network-daily-browsers'),
 ]
