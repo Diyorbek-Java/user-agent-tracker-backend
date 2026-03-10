@@ -39,6 +39,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
       - static_volume:/app/staticfiles
+      - ./front_dist:/app/front
     depends_on:
       - web
 
