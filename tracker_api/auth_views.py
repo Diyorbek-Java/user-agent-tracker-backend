@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 
 from .models import User, Department, JobPosition
+from .email_utils import send_staff_invitation_email, send_password_reset_email
 
 
 @api_view(['POST'])
@@ -293,16 +294,17 @@ def invite_staff_view(request):
     new_user.invitation_sent_at = timezone.now()
     new_user.save()
 
+    send_staff_invitation_email(new_user, otp)
+
     return Response({
         'success': True,
-        'message': f'User created for {email}',
+        'message': f'User created and invitation email sent to {email}',
         'user': {
             'id': new_user.id,
             'employee_id': new_user.employee_id,
             'email': new_user.email,
             'full_name': new_user.full_name,
             'role': new_user.role,
-            'otp': otp,  # Return OTP for testing
         }
     }, status=status.HTTP_201_CREATED)
 
@@ -337,11 +339,13 @@ def request_password_reset_view(request):
 
     # Generate reset OTP
     reset_otp = user.generate_reset_otp()
+    user.save()
+
+    send_password_reset_email(user, reset_otp)
 
     return Response({
         'success': True,
         'message': 'If the email exists, a password reset OTP has been sent',
-        'otp': reset_otp  # For testing only
     })
 
 
