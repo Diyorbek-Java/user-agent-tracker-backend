@@ -86,6 +86,6 @@ jobs:
           script: |
             cd ${{ secrets.PROJECT_PATH }}
             git pull origin main
-            docker compose pull
-            docker compose up -d
+            docker-compose pull
+            docker-compose up -d
             docker image prune -f
