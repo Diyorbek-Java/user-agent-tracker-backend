@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
     User, Session, Activity, ApplicationUsageStats, NetworkActivity,
     AppCategory, DepartmentAppRule, ManualTimeEntry,
-    Department, JobPosition, PositionAppWeight, ProductivitySettings,
+    Organization, Department, JobPosition, PositionAppWeight, ProductivitySettings,
     WorkingShift
 )
 
@@ -46,6 +46,14 @@ class UserAdmin(BaseUserAdmin):
     )
 
     readonly_fields = ['last_login', 'date_joined', 'updated_at', 'otp_created_at', 'otp_expires_at']
+
+
+@admin.register(Organization)
+class OrganizationAdmin(admin.ModelAdmin):
+    list_display = ['name', 'head_of_organization', 'is_active', 'created_at']
+    list_filter = ['is_active', 'created_at']
+    search_fields = ['name', 'description', 'head_of_organization__full_name']
+    readonly_fields = ['created_at', 'updated_at']
 
 
 @admin.register(Department)
