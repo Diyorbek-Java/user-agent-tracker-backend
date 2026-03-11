@@ -163,7 +163,7 @@ CORS_ALLOW_ALL_ORIGINS = True  # For development only
 CORS_ALLOW_CREDENTIALS = True
 
 # CSRF settings - Exempt API endpoints for development
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000').split(',')
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000,https://activitywatch.uz,https://www.activitywatch.uz').split(',')
 # For API-only endpoints, you might want to exempt them from CSRF
 # This is handled by DRF's authentication classes (TokenAuthentication is CSRF-exempt)
 
