@@ -424,11 +424,28 @@ def user_list(request):
             status=status.HTTP_403_FORBIDDEN
         )
 
-    users = User.objects.filter(is_active=True).values(
-        'id', 'username', 'full_name', 'email', 'role', 'department', 'position'
-    ).order_by('full_name')
+    users = User.objects.filter(is_active=True).select_related('department', 'position')
 
-    return Response(list(users))
+    # Managers only see users in their own department
+    if request.user.is_manager_user() and not request.user.is_admin_user():
+        users = users.filter(department=request.user.department)
+
+    data = [
+        {
+            'id': u.id,
+            'employee_id': u.employee_id,
+            'full_name': u.full_name,
+            'email': u.email,
+            'role': u.role,
+            'department': u.department_id,
+            'department_name': u.department.name if u.department else None,
+            'position': u.position_id,
+            'position_name': u.position.title if u.position else None,
+        }
+        for u in users.order_by('full_name')
+    ]
+
+    return Response(data)
 
 
 @api_view(['GET'])
@@ -482,10 +499,10 @@ def all_users_summary(request):
     return Response(serializer.data)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def user_detail_report(request, user_id):
-    """Get detailed report for a specific user (Admin/Manager only)"""
+    """Get detailed report or delete a specific user (Admin/Manager only)"""
     if not request.user.is_admin_user() and not request.user.is_manager_user():
         return Response(
             {'error': 'Permission denied'},
@@ -499,6 +516,14 @@ def user_detail_report(request, user_id):
             {'error': 'User not found'},
             status=status.HTTP_404_NOT_FOUND
         )
+
+    if request.method == 'DELETE':
+        if not request.user.is_admin_user():
+            return Response({'error': 'Only admins can delete users'}, status=status.HTTP_403_FORBIDDEN)
+        if user.id == request.user.id:
+            return Response({'error': 'You cannot delete your own account'}, status=status.HTTP_400_BAD_REQUEST)
+        user.delete()
+        return Response({'success': True, 'message': 'User deleted successfully'}, status=status.HTTP_200_OK)
 
     # Get date range
     days = int(request.GET.get('days', 7))
