@@ -1,6 +1,7 @@
 """
 Authentication views for email-based login, OTP, and staff invitation
 """
+import re
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from rest_framework import status
@@ -11,6 +12,17 @@ from rest_framework.authtoken.models import Token
 
 from .models import User, Department, JobPosition
 from .email_utils import send_staff_invitation_email, send_password_reset_email
+
+
+def _generate_employee_id():
+    """Auto-generate next sequential employee ID (EMP001, EMP002, …)."""
+    ids = User.objects.filter(employee_id__regex=r'^EMP\d+$').values_list('employee_id', flat=True)
+    max_num = max((int(re.search(r'\d+', eid).group()) for eid in ids), default=0)
+    candidate = f"EMP{max_num + 1:03d}"
+    while User.objects.filter(employee_id=candidate).exists():
+        max_num += 1
+        candidate = f"EMP{max_num + 1:03d}"
+    return candidate
 
 
 @api_view(['POST'])
@@ -202,7 +214,7 @@ def invite_staff_view(request):
     # Get data from request
     email = request.data.get('email', '').lower()
     full_name = request.data.get('full_name')
-    employee_id = request.data.get('employee_id')
+    employee_id = request.data.get('employee_id') or _generate_employee_id()
     department_id = request.data.get('department', None)
     position_id = request.data.get('position', None)
 
@@ -256,10 +268,10 @@ def invite_staff_view(request):
         }, status=status.HTTP_403_FORBIDDEN)
 
     # Validation
-    if not all([email, full_name, employee_id]):
+    if not all([email, full_name]):
         return Response({
             'success': False,
-            'error': 'Email, full name, and employee ID are required'
+            'error': 'Email and full name are required'
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Check if email or employee ID already exists
@@ -277,7 +289,7 @@ def invite_staff_view(request):
 
     # Create user with OTP
     new_user = User.objects.create_user(
-        username=email.split('@')[0] + employee_id,
+        username=email.split('@')[0] + '_' + employee_id,
         email=email,
         employee_id=employee_id,
         full_name=full_name,
