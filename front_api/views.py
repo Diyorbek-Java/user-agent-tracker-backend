@@ -439,8 +439,7 @@ def user_list(request):
             'role': u.role,
             'department': u.department_id,
             'department_name': u.department.name if u.department else None,
-            'position': u.position_id,
-            'position_name': u.position.title if u.position else None,
+            'position': {'id': u.position_id, 'name': u.position.title} if u.position else None,
         }
         for u in users.order_by('full_name')
     ]
