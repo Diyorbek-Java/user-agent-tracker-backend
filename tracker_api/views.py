@@ -583,7 +583,7 @@ def productivity_employee_detail(request, user_id):
     date_to = timezone.now()
     date_from = date_to - timedelta(days=days)
 
-    productivity = ProductivityService.calculate_user_productivity(user, date_from, date_to)
+    productivity = ProductivityService.calculate_user_productivity(user, date_from, date_to, user.position)
     daily_trend = ProductivityService.get_user_daily_trend(user, date_from, date_to)
 
     total_hours = productivity['total_tracked_hours']
