@@ -486,7 +486,7 @@ def all_users_summary(request):
         ]
 
         summaries.append({
-            'user': UserProfileSerializer(user).data,
+            'user': user,
             'total_sessions': sessions.count(),
             'total_active_hours': total_active_hours,
             'total_activities': activities.count(),

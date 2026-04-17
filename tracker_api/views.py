@@ -4,6 +4,7 @@ from django.db.models import Sum, Count, Q
 from django.db import IntegrityError
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, action
+from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.response import Response
 from datetime import datetime, timedelta
 import logging
@@ -20,10 +21,21 @@ from django.utils.dateparse import parse_datetime
 logger = logging.getLogger(__name__)
 
 
+class IsAdminOrManager(BasePermission):
+    """Allow access only to admin or manager users."""
+    def has_permission(self, request, view):
+        return (
+            request.user and
+            request.user.is_authenticated and
+            (request.user.is_admin_user() or request.user.is_manager_user())
+        )
+
+
 class UserViewSet(viewsets.ModelViewSet):
     """API endpoint for managing users/employees"""
     queryset = User.objects.all()
     serializer_class = UserSerializer
+    permission_classes = [IsAdminOrManager]
 
     @action(detail=True, methods=['get'])
     def sessions(self, request, pk=None):

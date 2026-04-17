@@ -50,15 +50,15 @@ urlpatterns = [
     # Admin endpoints
     path('admin/invite-staff/', invite_staff_view, name='invite-staff'),
 
-    # Router URLs
-    path('', include(router.urls)),
-
-    # Custom endpoints
+    # Custom endpoints that must be defined before router to avoid conflicts
     path('upload/', upload_tracking_data, name='upload-tracking-data'),
     path('merge-token/', merge_metric_token, name='merge-metric-token'),
     path('dashboard/', dashboard_stats, name='dashboard-stats'),
     path('users/<int:user_id>/report/', user_activity_report, name='user-report'),
     path('activities/recent/', recent_activities, name='recent-activities'),
+
+    # Router URLs (must come after custom paths to avoid overriding them)
+    path('', include(router.urls)),
 
     # Productivity Dashboard endpoints
     path('productivity/dashboard/', productivity_dashboard, name='productivity-dashboard'),

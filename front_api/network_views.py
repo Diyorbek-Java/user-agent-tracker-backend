@@ -204,12 +204,12 @@ def network_daily_browser(request):
         visit_count=Count('id')
     ).order_by('-date', '-total_duration')
 
-    # Distinct browsers for dropdown
+    # Distinct browsers for dropdown (order_by overrides model Meta ordering so distinct() works correctly)
     available_browsers = list(
         NetworkActivity.objects.filter(
             session__user=user,
             start_time__gte=date_from
-        ).values_list('browser_process', flat=True).distinct()
+        ).order_by('browser_process').values_list('browser_process', flat=True).distinct()
     )
 
     results = []
