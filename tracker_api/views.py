@@ -180,24 +180,28 @@ def upload_tracking_data(request):
         day_start = timezone.make_aware(datetime.combine(activity_date, datetime.min.time()))
         day_end = timezone.make_aware(datetime.combine(activity_date, datetime.max.time()))
 
-        session_defaults = {
-            'end_time': day_end,
-            'is_active': True
-        }
-
         if user_obj:
-            sess, _ = Session.objects.get_or_create(
+            # Search by date range to avoid duplicate sessions when midnight timestamp
+            # differs slightly (e.g. after agent restart / merge_metric_token flow)
+            existing = Session.objects.filter(
+                user=user_obj,
+                start_time__date=activity_date
+            ).order_by('-total_duration').first()
+            if existing:
+                return existing
+            return Session.objects.create(
                 user=user_obj,
                 start_time=day_start,
-                defaults=session_defaults
+                end_time=day_end,
+                is_active=True
             )
         else:
             sess, _ = Session.objects.get_or_create(
                 metric_token=metric_tok,
                 start_time=day_start,
-                defaults=session_defaults
+                defaults={'end_time': day_end, 'is_active': True}
             )
-        return sess
+            return sess
 
     # Create activities - group by date from activity's start_time
     activities_created = []
@@ -465,16 +469,37 @@ def merge_metric_token(request):
 
     logger.info(f"Merging {sessions_updated} sessions, {activities_updated} activities, {network_activities_updated} network activities from token {metric_token[:8]}... to user {user.employee_id}")
 
-    # Transfer sessions to user
-    metric_sessions.update(user=user, metric_token=None)
+    # For each metric-token session, merge into the user's existing daily session
+    # (or adopt it if no daily session exists yet), to prevent duplicate sessions
+    sessions_deleted = 0
+    for ms in metric_sessions:
+        ms_date = ms.start_time.date()
+        user_session = Session.objects.filter(
+            user=user,
+            start_time__date=ms_date
+        ).order_by('-total_duration').first()
 
-    # Transfer activities to user sessions
-    # For activities with sessions, clear metric_token (they're now linked via session)
-    # For activities without sessions, we keep them but clear metric_token
-    metric_activities.update(metric_token=None)
+        if user_session and user_session.id != ms.id:
+            # Move activities and network activities into the existing user session
+            Activity.objects.filter(session=ms).update(session=user_session, metric_token=None)
+            NetworkActivity.objects.filter(session=ms).update(session=user_session, metric_token=None)
+            # Accumulate duration
+            if ms.total_duration:
+                user_session.total_duration = (user_session.total_duration or 0) + ms.total_duration
+                user_session.save(update_fields=['total_duration'])
+            ms.delete()
+            sessions_deleted += 1
+        else:
+            # No existing user session for this day — adopt the metric-token session
+            ms.user = user
+            ms.metric_token = None
+            ms.save(update_fields=['user', 'metric_token'])
+
+    # Clear metric_token on any loose activities (not linked to a session)
+    metric_activities.filter(session__isnull=True).update(metric_token=None)
 
     # Transfer network activities
-    metric_network_activities.update(metric_token=None)
+    metric_network_activities.filter(session__isnull=True).update(metric_token=None)
 
     return Response({
         'status': 'success',
