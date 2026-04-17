@@ -596,16 +596,16 @@ class ProductivitySettings(models.Model):
     Stores configurable defaults for the productivity calculation.
     """
     default_weight = models.FloatField(
-        default=0.5,
+        default=0.3,
         validators=[MinValueValidator(0.0), MaxValueValidator(1.0)],
         help_text="Default weight for uncategorized apps (0.0-1.0)"
     )
     productive_threshold = models.IntegerField(
-        default=70,
+        default=75,
         help_text="Score >= this is 'productive' (%)"
     )
     needs_improvement_threshold = models.IntegerField(
-        default=50,
+        default=60,
         help_text="Score >= this is 'needs improvement', below is 'unproductive' (%)"
     )
     updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
