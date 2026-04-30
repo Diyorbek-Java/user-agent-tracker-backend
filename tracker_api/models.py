@@ -38,7 +38,7 @@ class Department(models.Model):
     Department/Team model
     Examples: Sales, Engineering, HR, Marketing, Finance, etc.
     """
-    name = models.CharField(max_length=100, unique=True, db_index=True)
+    name = models.CharField(max_length=100, db_index=True)
     description = models.TextField(blank=True, null=True, help_text="Department description and responsibilities")
     organization = models.ForeignKey(
         Organization,
@@ -63,6 +63,9 @@ class Department(models.Model):
     class Meta:
         ordering = ['name']
         verbose_name_plural = 'Departments'
+        constraints = [
+            models.UniqueConstraint(fields=['organization', 'name'], name='uniq_dept_name_per_org')
+        ]
 
     def __str__(self):
         return self.name
@@ -73,13 +76,21 @@ class JobPosition(models.Model):
     Job Position/Title model
     Examples: Senior Developer, Sales Manager, HR Coordinator, etc.
     """
-    title = models.CharField(max_length=100, unique=True, db_index=True)
+    title = models.CharField(max_length=100, db_index=True)
     description = models.TextField(blank=True, null=True, help_text="Position description and responsibilities")
     level = models.CharField(
         max_length=20,
         blank=True,
         null=True,
         help_text="Job level (Junior, Mid, Senior, Lead, Manager, etc.)"
+    )
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='positions',
+        help_text="Tenant org this position belongs to. Null = global/default."
     )
     is_active = models.BooleanField(default=True, help_text="Is this position currently available?")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -88,6 +99,9 @@ class JobPosition(models.Model):
     class Meta:
         ordering = ['title']
         verbose_name_plural = 'Job Positions'
+        constraints = [
+            models.UniqueConstraint(fields=['organization', 'title'], name='uniq_position_title_per_org')
+        ]
 
     def __str__(self):
         return self.title
@@ -139,6 +153,15 @@ class User(AbstractUser):
         related_name='admin_users',
         help_text="Organization this user administers (only for ADMINISTRATION role)"
     )
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='members',
+        db_index=True,
+        help_text="Tenant organization this user belongs to (denormalized from department)"
+    )
     computer_name = models.CharField(max_length=100, blank=True, null=True)
 
     # Invitation system
@@ -168,6 +191,14 @@ class User(AbstractUser):
 
     def __str__(self):
         return f"{self.full_name} ({self.employee_id})"
+
+    def save(self, *args, **kwargs):
+        # Keep `organization` in sync: prefer explicit value, otherwise derive from department
+        if not self.organization_id and self.department_id:
+            dept_org_id = Department.objects.filter(pk=self.department_id).values_list('organization_id', flat=True).first()
+            if dept_org_id:
+                self.organization_id = dept_org_id
+        super().save(*args, **kwargs)
 
     def generate_otp(self, length=12):
         """Generate a secure one-time password"""

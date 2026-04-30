@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from drf_spectacular.utils import extend_schema
 from tracker_api.models import Organization, Department, JobPosition, User
+from .tenant import get_user_org_id, is_platform_admin
 from .serializers import OrganizationSerializer, DepartmentSerializer, JobPositionSerializer, UserProfileSerializer
 
 
@@ -21,6 +22,20 @@ def _can_write_org(user):
     return user.is_admin_user() or user.is_manager_user() or user.is_org_manager_user()
 
 
+def _scoped_orgs(user):
+    """Restrict an Organization queryset to the caller's tenant. Platform admins see all."""
+    qs = Organization.objects.filter(is_active=True)
+    if is_platform_admin(user):
+        return qs
+    if user.is_org_manager_user():
+        # ORG_MANAGER is a platform-side curator role today; treat as platform-admin for orgs
+        return qs
+    org_id = get_user_org_id(user) or getattr(user, 'managed_organization_id', None)
+    if not org_id:
+        return qs.none()
+    return qs.filter(pk=org_id)
+
+
 # ============================================================
 # ORGANIZATION CRUD
 # ============================================================
@@ -33,13 +48,7 @@ def organizations_list(request):
         if not _can_manage_org(request.user):
             return Response({'success': False, 'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
 
-        orgs = Organization.objects.filter(is_active=True)
-        # ORG_ADMIN: only their managed org
-        if request.user.is_org_admin_user():
-            if request.user.managed_organization_id:
-                orgs = orgs.filter(pk=request.user.managed_organization_id)
-            else:
-                orgs = orgs.none()
+        orgs = _scoped_orgs(request.user)
 
         serializer = OrganizationSerializer(orgs, many=True)
         return Response({'success': True, 'organizations': serializer.data})
@@ -67,9 +76,9 @@ def organization_detail(request, pk):
     if not _can_manage_org(request.user):
         return Response({'success': False, 'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
 
-    # ORG_ADMIN can only see their own org
-    if request.user.is_org_admin_user() and request.user.managed_organization_id != org.pk:
-        return Response({'success': False, 'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+    # Tenant scoping: caller can only act on their own org (platform admins / org managers bypass)
+    if not _scoped_orgs(request.user).filter(pk=org.pk).exists():
+        return Response({'success': False, 'error': 'Organization not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
         return Response({'success': True, 'organization': OrganizationSerializer(org).data})
@@ -135,13 +144,24 @@ def users_list_for_org(request):
     if not _can_manage_org(request.user):
         return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
 
-    users = User.objects.filter(is_active=True).select_related('department', 'position').order_by('full_name')
+    users = User.objects.filter(is_active=True).select_related('department', 'position')
+
+    if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+        org_id = get_user_org_id(request.user)
+        if org_id is None:
+            users = users.none()
+        else:
+            users = users.filter(organization_id=org_id)
+
+    users = users.order_by('full_name')
 
     data = [{
         'id': u.id,
         'full_name': u.full_name,
         'employee_id': u.employee_id,
+        'email': u.email,
         'role': u.role,
+        'is_active': u.is_active,
         'department': u.department_id,
         'department_name': u.department.name if u.department else None,
         'position': u.position_id,
@@ -161,6 +181,11 @@ def assign_user(request, user_id):
         user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Tenant scoping
+    if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+        if get_user_org_id(user) != get_user_org_id(request.user):
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if 'department' in request.data:
         dept_id = request.data['department']
@@ -201,6 +226,119 @@ def assign_user(request, user_id):
     })
 
 
+# Roles a caller is allowed to assign, keyed by the caller's own role.
+# ADMIN (platform) is intentionally never assignable through this endpoint.
+_ASSIGNABLE_BY_CALLER = {
+    'ADMIN':       {'MANAGER', 'EMPLOYEE', 'ORG_MANAGER', 'ORG_ADMIN'},
+    'ORG_MANAGER': {'ORG_ADMIN', 'MANAGER', 'EMPLOYEE'},
+    'ORG_ADMIN':   {'MANAGER', 'EMPLOYEE'},
+    'MANAGER':     {'EMPLOYEE'},
+}
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def change_user_role(request, user_id):
+    """
+    PATCH /api/frontend/org-users/<id>/role/  Body: { "role": "MANAGER" }
+
+    Restrictions:
+      - Caller cannot change their own role
+      - Cannot promote anyone to ADMIN through this endpoint
+      - Caller can only assign roles inside _ASSIGNABLE_BY_CALLER for their own role
+      - Caller cannot manage users whose current role is outside that set
+      - Tenant scoping: target must be in caller's org (platform/org-manager bypass)
+    """
+    new_role = (request.data.get('role') or '').strip().upper()
+    if not new_role:
+        return Response({'error': 'role is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    caller = request.user
+    allowed = _ASSIGNABLE_BY_CALLER.get(getattr(caller, 'role', None), set())
+    if not allowed:
+        return Response({'error': 'You are not allowed to change roles'}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        target = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if target.id == caller.id:
+        return Response({'error': 'You cannot change your own role'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not is_platform_admin(caller) and not caller.is_org_manager_user():
+        if get_user_org_id(target) != get_user_org_id(caller):
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not is_platform_admin(caller) and target.role not in allowed and target.role != new_role:
+        return Response({'error': 'You cannot manage users with this role'}, status=status.HTTP_403_FORBIDDEN)
+
+    if new_role not in allowed:
+        return Response({'error': f'You cannot assign the {new_role} role'}, status=status.HTTP_403_FORBIDDEN)
+
+    if target.role != new_role:
+        target.role = new_role
+        target.save(update_fields=['role', 'updated_at'])
+
+    return Response({
+        'success': True,
+        'user': {
+            'id': target.id,
+            'full_name': target.full_name,
+            'email': target.email,
+            'role': target.role,
+        }
+    })
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def set_user_active(request, user_id):
+    """
+    PATCH /api/frontend/org-users/<id>/active/  Body: { "is_active": true|false }
+
+    Soft-disable a user so they keep their history but cannot log in.
+    """
+    is_active = request.data.get('is_active')
+    if is_active is None:
+        return Response({'error': 'is_active is required'}, status=status.HTTP_400_BAD_REQUEST)
+    is_active = bool(is_active)
+
+    caller = request.user
+    allowed = _ASSIGNABLE_BY_CALLER.get(getattr(caller, 'role', None), set())
+    if not allowed:
+        return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        target = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if target.id == caller.id:
+        return Response({'error': 'You cannot deactivate your own account'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not is_platform_admin(caller) and not caller.is_org_manager_user():
+        if get_user_org_id(target) != get_user_org_id(caller):
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not is_platform_admin(caller) and target.role not in allowed:
+        return Response({'error': 'You cannot manage users with this role'}, status=status.HTTP_403_FORBIDDEN)
+
+    if target.is_active != is_active:
+        target.is_active = is_active
+        target.save(update_fields=['is_active', 'updated_at'])
+
+    return Response({
+        'success': True,
+        'user': {
+            'id': target.id,
+            'full_name': target.full_name,
+            'email': target.email,
+            'is_active': target.is_active,
+        }
+    })
+
+
 @extend_schema(methods=['POST'], request=DepartmentSerializer)
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
@@ -214,18 +352,23 @@ def departments_list(request):
 
     if request.method == 'GET':
         departments = Department.objects.filter(is_active=True)
-        if request.user.is_org_admin_user():
-            departments = departments.filter(organization_id=request.user.managed_organization_id)
+        if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+            org_id = get_user_org_id(request.user) or getattr(request.user, 'managed_organization_id', None)
+            if org_id is None:
+                departments = departments.none()
+            else:
+                departments = departments.filter(organization_id=org_id)
         serializer = DepartmentSerializer(departments, many=True)
         return Response({'success': True, 'departments': serializer.data})
 
     # POST
     data = request.data.copy()
-    # ORG_ADMIN: auto-set organization to their managed org
-    if request.user.is_org_admin_user():
-        if not request.user.managed_organization_id:
+    # Tenant users: auto-set organization to their own org
+    if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+        caller_org = get_user_org_id(request.user) or getattr(request.user, 'managed_organization_id', None)
+        if not caller_org:
             return Response({'success': False, 'error': 'You are not assigned to any organization'}, status=status.HTTP_403_FORBIDDEN)
-        data['organization'] = request.user.managed_organization_id
+        data['organization'] = caller_org
 
     serializer = DepartmentSerializer(data=data)
     if serializer.is_valid():
@@ -246,10 +389,11 @@ def department_detail(request, pk):
     if not _can_manage_org(request.user):
         return Response({'success': False, 'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
 
-    # ORG_ADMIN: only their org's departments
-    if request.user.is_org_admin_user():
-        if department.organization_id != request.user.managed_organization_id:
-            return Response({'success': False, 'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+    # Tenant scoping
+    if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+        caller_org = get_user_org_id(request.user) or getattr(request.user, 'managed_organization_id', None)
+        if department.organization_id != caller_org:
+            return Response({'success': False, 'error': 'Department not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
         return Response({'success': True, 'department': DepartmentSerializer(department).data})
@@ -276,10 +420,26 @@ def job_positions_list(request):
 
     if request.method == 'GET':
         positions = JobPosition.objects.filter(is_active=True)
+        # Tenant users see global (org IS NULL) + their own org's positions
+        if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+            org_id = get_user_org_id(request.user) or getattr(request.user, 'managed_organization_id', None)
+            if org_id:
+                from django.db.models import Q
+                positions = positions.filter(Q(organization_id=org_id) | Q(organization__isnull=True))
+            else:
+                positions = positions.filter(organization__isnull=True)
         serializer = JobPositionSerializer(positions, many=True)
         return Response({'success': True, 'positions': serializer.data})
 
-    serializer = JobPositionSerializer(data=request.data)
+    # POST: tenant users always create positions inside their org
+    data = request.data.copy()
+    if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+        caller_org = get_user_org_id(request.user) or getattr(request.user, 'managed_organization_id', None)
+        if not caller_org:
+            return Response({'success': False, 'error': 'You are not assigned to any organization'}, status=status.HTTP_403_FORBIDDEN)
+        data['organization'] = caller_org
+
+    serializer = JobPositionSerializer(data=data)
     if serializer.is_valid():
         serializer.save()
         return Response({'success': True, 'position': serializer.data}, status=status.HTTP_201_CREATED)
@@ -297,6 +457,14 @@ def job_position_detail(request, pk):
 
     if not _can_manage_org(request.user):
         return Response({'success': False, 'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+
+    # Tenant scoping (allow global positions to be read by anyone, but only mutated by platform)
+    if not is_platform_admin(request.user) and not request.user.is_org_manager_user():
+        caller_org = get_user_org_id(request.user) or getattr(request.user, 'managed_organization_id', None)
+        if position.organization_id is None and request.method != 'GET':
+            return Response({'success': False, 'error': 'Cannot modify global positions'}, status=status.HTTP_403_FORBIDDEN)
+        if position.organization_id is not None and position.organization_id != caller_org:
+            return Response({'success': False, 'error': 'Position not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
         return Response({'success': True, 'position': JobPositionSerializer(position).data})

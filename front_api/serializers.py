@@ -198,12 +198,20 @@ class ManualTimeEntrySerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'user_name', 'activity_type', 'activity_type_display',
                   'description', 'start_time', 'end_time', 'duration_minutes',
                   'is_productive', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at', 'user']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'user', 'duration_minutes']
 
     def create(self, validated_data):
         # Auto-set user from request context
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        # Recalculate duration when start/end change
+        instance = super().update(instance, validated_data)
+        if instance.start_time and instance.end_time:
+            instance.duration_minutes = int((instance.end_time - instance.start_time).total_seconds() / 60)
+            instance.save(update_fields=['duration_minutes'])
+        return instance
 
 
 class PositionAppWeightSerializer(serializers.ModelSerializer):

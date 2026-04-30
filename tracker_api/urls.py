@@ -16,7 +16,8 @@ from .views import (
 )
 from .auth_views import (
     login_view, set_password_view, invite_staff_view,
-    request_password_reset_view, reset_password_view, current_user_view
+    request_password_reset_view, reset_password_view, current_user_view,
+    signup_organization_view,
 )
 
 
@@ -42,6 +43,7 @@ urlpatterns = [
 
     # Authentication endpoints
     path('auth/login/', login_view, name='login'),
+    path('auth/signup-org/', signup_organization_view, name='signup-org'),
     path('auth/set-password/', set_password_view, name='set-password'),
     path('auth/request-password-reset/', request_password_reset_view, name='request-password-reset'),
     path('auth/reset-password/', reset_password_view, name='reset-password'),

@@ -11,6 +11,7 @@ import os
 from decouple import config
 from tracker_api.models import User, Session, Activity, ApplicationUsageStats
 from tracker_api.services import ProductivityService
+from .tenant import get_user_org_id, is_platform_admin
 from .serializers import (
     UserProfileSerializer, SessionListSerializer, ActivityListSerializer,
     DashboardStatsSerializer, ApplicationUsageSerializer,
@@ -46,12 +47,20 @@ def get_target_user(request):
     # Admin/Manager can view specified user's data
     try:
         target_user = User.objects.get(id=user_id)
-        return target_user, None
     except User.DoesNotExist:
         return None, Response(
             {'error': f'User with id {user_id} not found'},
             status=status.HTTP_404_NOT_FOUND
         )
+
+    # Tenant scoping: refuse cross-org access (404 to avoid leaking existence)
+    if not is_platform_admin(requesting_user) and get_user_org_id(target_user) != get_user_org_id(requesting_user):
+        return None, Response(
+            {'error': f'User with id {user_id} not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    return target_user, None
 
 
 @api_view(['GET'])
@@ -426,6 +435,14 @@ def user_list(request):
 
     users = User.objects.filter(is_active=True).select_related('department', 'position')
 
+    # Tenant scoping: non-platform admins only see their org's users
+    if not is_platform_admin(request.user):
+        org_id = get_user_org_id(request.user)
+        if org_id is None:
+            users = users.none()
+        else:
+            users = users.filter(organization_id=org_id)
+
     # Managers only see users in their own department
     if request.user.is_manager_user() and not request.user.is_admin_user():
         users = users.filter(department=request.user.department)
@@ -437,6 +454,7 @@ def user_list(request):
             'full_name': u.full_name,
             'email': u.email,
             'role': u.role,
+            'is_active': u.is_active,
             'department': u.department_id,
             'department_name': u.department.name if u.department else None,
             'position': {'id': u.position_id, 'name': u.position.title} if u.position else None,
@@ -458,6 +476,15 @@ def all_users_summary(request):
         )
 
     users = User.objects.filter(is_active=True, role=User.EMPLOYEE)
+
+    # Tenant scoping
+    if not is_platform_admin(request.user):
+        org_id = get_user_org_id(request.user)
+        if org_id is None:
+            users = users.none()
+        else:
+            users = users.filter(organization_id=org_id)
+
     summaries = []
 
     for user in users:
@@ -515,6 +542,10 @@ def user_detail_report(request, user_id):
             {'error': 'User not found'},
             status=status.HTTP_404_NOT_FOUND
         )
+
+    # Tenant scoping
+    if not is_platform_admin(request.user) and get_user_org_id(user) != get_user_org_id(request.user):
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'DELETE':
         if not request.user.is_admin_user():

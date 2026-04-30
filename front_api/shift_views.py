@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema
 from tracker_api.models import User, WorkingShift
 from tracker_api.serializers import WorkingShiftSerializer, BulkWorkingShiftSerializer
+from .tenant import get_user_org_id, is_platform_admin
 
 
 @api_view(['GET'])
@@ -27,6 +28,9 @@ def user_shifts(request, user_id):
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not is_platform_admin(requesting_user) and get_user_org_id(user) != get_user_org_id(requesting_user):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     shifts = WorkingShift.objects.filter(user=user)
@@ -71,6 +75,9 @@ def set_user_shifts(request, user_id):
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not is_platform_admin(request.user) and get_user_org_id(user) != get_user_org_id(request.user):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     serializer = BulkWorkingShiftSerializer(data=request.data)
@@ -120,7 +127,16 @@ def all_users_shifts(request):
             status=status.HTTP_403_FORBIDDEN
         )
 
-    users = User.objects.filter(is_active=True).order_by('full_name')
+    users = User.objects.filter(is_active=True)
+
+    if not is_platform_admin(request.user):
+        org_id = get_user_org_id(request.user)
+        if org_id is None:
+            users = users.none()
+        else:
+            users = users.filter(organization_id=org_id)
+
+    users = users.order_by('full_name')
     results = []
 
     for user in users:

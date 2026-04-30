@@ -17,6 +17,7 @@ from .serializers import (
 )
 from .services import ProductivityService
 from django.utils.dateparse import parse_datetime
+from front_api.tenant import get_user_org_id, is_platform_admin
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,15 @@ class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAdminOrManager]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if is_platform_admin(self.request.user):
+            return qs
+        org_id = get_user_org_id(self.request.user)
+        if org_id is None:
+            return qs.none()
+        return qs.filter(organization_id=org_id)
 
     @action(detail=True, methods=['get'])
     def sessions(self, request, pk=None):
@@ -72,10 +82,19 @@ class SessionViewSet(viewsets.ModelViewSet):
             return SessionWithActivitiesSerializer
         return SessionSerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if is_platform_admin(self.request.user):
+            return qs
+        org_id = get_user_org_id(self.request.user)
+        if org_id is None:
+            return qs.none()
+        return qs.filter(user__organization_id=org_id)
+
     @action(detail=False, methods=['get'])
     def active(self, request):
         """Get all active sessions"""
-        active_sessions = Session.objects.filter(is_active=True)
+        active_sessions = self.get_queryset().filter(is_active=True)
         serializer = self.get_serializer(active_sessions, many=True)
         return Response(serializer.data)
 
@@ -94,6 +113,13 @@ class ActivityViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(session_id=session_id)
         if process_name:
             queryset = queryset.filter(process_name__icontains=process_name)
+
+        # Tenant scoping
+        if not is_platform_admin(self.request.user):
+            org_id = get_user_org_id(self.request.user)
+            if org_id is None:
+                return queryset.none()
+            queryset = queryset.filter(session__user__organization_id=org_id)
 
         return queryset
 
@@ -355,20 +381,28 @@ def dashboard_stats(request):
     days = int(request.query_params.get('days', 7))
     date_from = timezone.now() - timedelta(days=days)
 
-    # Active users
-    active_users = User.objects.filter(is_active=True).count()
+    # Tenant scoping
+    users_qs = User.objects.filter(is_active=True)
+    sessions_qs = Session.objects.all()
+    activities_qs = Activity.objects.all()
 
-    # Active sessions
-    active_sessions = Session.objects.filter(is_active=True).count()
+    if not is_platform_admin(request.user):
+        org_id = get_user_org_id(request.user)
+        if org_id is None:
+            users_qs = users_qs.none()
+            sessions_qs = sessions_qs.none()
+            activities_qs = activities_qs.none()
+        else:
+            users_qs = users_qs.filter(organization_id=org_id)
+            sessions_qs = sessions_qs.filter(user__organization_id=org_id)
+            activities_qs = activities_qs.filter(session__user__organization_id=org_id)
 
-    # Total sessions in date range
-    total_sessions = Session.objects.filter(start_time__gte=date_from).count()
+    active_users = users_qs.count()
+    active_sessions = sessions_qs.filter(is_active=True).count()
+    total_sessions = sessions_qs.filter(start_time__gte=date_from).count()
+    total_activities = activities_qs.filter(start_time__gte=date_from).count()
 
-    # Total activities in date range
-    total_activities = Activity.objects.filter(start_time__gte=date_from).count()
-
-    # Top applications
-    top_apps = Activity.objects.filter(
+    top_apps = activities_qs.filter(
         start_time__gte=date_from
     ).values('process_name').annotate(
         total_count=Count('id'),
@@ -393,6 +427,9 @@ def user_activity_report(request, user_id):
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not is_platform_admin(request.user) and get_user_org_id(user) != get_user_org_id(request.user):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     # Get date range
@@ -529,6 +566,14 @@ def recent_activities(request):
 
     activities = Activity.objects.all()
 
+    # Tenant scoping
+    if not is_platform_admin(request.user):
+        org_id = get_user_org_id(request.user)
+        if org_id is None:
+            activities = activities.none()
+        else:
+            activities = activities.filter(session__user__organization_id=org_id)
+
     if user_id:
         activities = activities.filter(session__user__employee_id=user_id)
     if metric_token:
@@ -616,6 +661,10 @@ def productivity_employee_detail(request, user_id):
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
+    # Tenant scoping
+    if not is_platform_admin(request.user) and get_user_org_id(user) != get_user_org_id(request.user):
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
     days = int(request.query_params.get('days', 7))
     date_to = timezone.now()
     date_from = date_to - timedelta(days=days)
@@ -672,6 +721,10 @@ def productivity_employee_apps(request, user_id):
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Tenant scoping
+    if not is_platform_admin(request.user) and get_user_org_id(user) != get_user_org_id(request.user):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     days = int(request.query_params.get('days', 7))
@@ -790,6 +843,9 @@ def working_shifts_by_user(request, user_id):
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
+    if not is_platform_admin(request.user) and get_user_org_id(user) != get_user_org_id(request.user):
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
     shifts = WorkingShift.objects.filter(user=user)
     serializer = WorkingShiftSerializer(shifts, many=True)
 
@@ -826,6 +882,9 @@ def working_shifts_set(request, user_id):
     try:
         user = User.objects.get(id=user_id)
     except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not is_platform_admin(request.user) and get_user_org_id(user) != get_user_org_id(request.user):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     serializer = BulkWorkingShiftSerializer(data=request.data)
@@ -868,8 +927,11 @@ def working_shift_detail(request, pk):
     DELETE: Delete a single working shift entry.
     """
     try:
-        shift = WorkingShift.objects.get(pk=pk)
+        shift = WorkingShift.objects.select_related('user').get(pk=pk)
     except WorkingShift.DoesNotExist:
+        return Response({'error': 'Working shift not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not is_platform_admin(request.user) and get_user_org_id(shift.user) != get_user_org_id(request.user):
         return Response({'error': 'Working shift not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'PUT':

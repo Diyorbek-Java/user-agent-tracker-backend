@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema
 from tracker_api.models import ManualTimeEntry
 from .serializers import ManualTimeEntrySerializer
+from .tenant import scope_qs_to_org, assert_same_org
 
 
 @extend_schema(methods=['POST'], request=ManualTimeEntrySerializer)
@@ -25,6 +26,9 @@ def manual_time_entries_list(request):
                 entries = ManualTimeEntry.objects.all()
         else:
             entries = ManualTimeEntry.objects.filter(user=request.user)
+
+        # Tenant scoping: never return data outside the caller's organization
+        entries = scope_qs_to_org(entries, request.user, user_path='user')
 
         # Filter by date range if provided
         start_date = request.GET.get('start_date')
@@ -55,9 +59,15 @@ def manual_time_entry_detail(request, pk):
     DELETE: Delete manual time entry (own entries only, or Admin/Manager can delete any)
     """
     try:
-        entry = ManualTimeEntry.objects.get(pk=pk)
+        entry = ManualTimeEntry.objects.select_related('user').get(pk=pk)
     except ManualTimeEntry.DoesNotExist:
         return Response({'error': 'Time entry not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Tenant scoping: refuse cross-org access (404 to avoid leaking existence)
+    if not (request.user.is_admin_user()):
+        from .tenant import get_user_org_id
+        if get_user_org_id(entry.user) != get_user_org_id(request.user):
+            return Response({'error': 'Time entry not found'}, status=status.HTTP_404_NOT_FOUND)
 
     # Check permissions
     if not (request.user.is_admin_user() or request.user.is_manager_user() or entry.user == request.user):

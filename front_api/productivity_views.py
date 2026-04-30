@@ -15,6 +15,7 @@ from datetime import timedelta
 
 from tracker_api.models import AppCategory, DepartmentAppRule, ManualTimeEntry, Activity, PositionAppWeight, ProductivitySettings
 from tracker_api.services import ProductivityService
+from .tenant import get_user_org_id, is_platform_admin
 from .serializers import (
     AppCategorySerializer,
     DepartmentAppRuleSerializer,
@@ -186,6 +187,10 @@ def enhanced_productivity_report(request):
         try:
             target_user = User.objects.get(id=user_id)
         except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Tenant scoping
+        if not is_platform_admin(request.user) and get_user_org_id(target_user) != get_user_org_id(request.user):
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
     else:
         target_user = request.user

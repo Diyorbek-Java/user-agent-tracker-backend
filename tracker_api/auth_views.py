@@ -3,6 +3,7 @@ Authentication views for email-based login, OTP, and staff invitation
 """
 import re
 from django.contrib.auth import authenticate
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -10,7 +11,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 
-from .models import User, Department, JobPosition
+from .models import User, Department, JobPosition, Organization
 from .email_utils import send_staff_invitation_email, send_password_reset_email
 
 
@@ -188,8 +189,11 @@ def set_password_view(request):
             'full_name': user.full_name,
             'role': user.role,
             'is_admin': user.is_admin_user(),
-            'department': user.department,
-            'position': user.position,
+            'department': user.department.name if user.department else None,
+            'department_id': user.department.id if user.department else None,
+            'position': user.position.title if user.position else None,
+            'position_id': user.position.id if user.position else None,
+            'managed_organization': user.managed_organization_id,
         }
     })
 
@@ -435,9 +439,103 @@ def current_user_view(request):
         'full_name': user.full_name,
         'role': user.role,
         'is_admin': user.is_admin_user(),
-        'department': user.department,
-        'position': user.position,
+        'department': user.department.name if user.department else None,
+        'department_id': user.department.id if user.department else None,
+        'position': user.position.title if user.position else None,
+        'position_id': user.position.id if user.position else None,
         'computer_name': user.computer_name,
         'last_login': user.last_login,
         'date_joined': user.date_joined,
     })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@transaction.atomic
+def signup_organization_view(request):
+    """
+    Self-service organization signup.
+
+    Creates an Organization and its first ORG_ADMIN user atomically. The new user
+    can log in immediately with the chosen password — no OTP or invitation needed.
+
+    POST /api/auth/signup-org/
+    Body: {
+        "organization_name": "Acme Corp",
+        "full_name": "Jane Doe",
+        "email": "jane@acme.com",
+        "password": "Strong#Password123"
+    }
+    """
+    org_name = (request.data.get('organization_name') or '').strip()
+    full_name = (request.data.get('full_name') or '').strip()
+    email = (request.data.get('email') or '').strip().lower()
+    password = request.data.get('password') or ''
+
+    if not all([org_name, full_name, email, password]):
+        return Response({
+            'success': False,
+            'error': 'organization_name, full_name, email and password are required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    if len(password) < 8:
+        return Response({
+            'success': False,
+            'error': 'Password must be at least 8 characters long'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    if User.objects.filter(email=email).exists():
+        return Response({
+            'success': False,
+            'error': 'A user with this email already exists'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    if Organization.objects.filter(name__iexact=org_name).exists():
+        return Response({
+            'success': False,
+            'error': 'An organization with this name already exists'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    employee_id = _generate_employee_id()
+    org = Organization.objects.create(name=org_name)
+
+    user = User.objects.create_user(
+        username=email.split('@')[0] + '_' + employee_id,
+        email=email,
+        password=password,
+        employee_id=employee_id,
+        full_name=full_name,
+        role=User.ORG_ADMIN,
+        organization=org,
+        managed_organization=org,
+        is_active=True,
+        is_invited=False,
+        otp_used=True,
+    )
+
+    # Make this user the head of the organization
+    org.head_of_organization = user
+    org.save(update_fields=['head_of_organization'])
+
+    token, _ = Token.objects.get_or_create(user=user)
+
+    return Response({
+        'success': True,
+        'message': 'Organization created. You can now sign in.',
+        'token': token.key,
+        'user': {
+            'id': user.id,
+            'employee_id': user.employee_id,
+            'email': user.email,
+            'full_name': user.full_name,
+            'role': user.role,
+            'is_admin': user.is_admin_user(),
+            'department': None,
+            'department_id': None,
+            'position': None,
+            'position_id': None,
+            'managed_organization': org.id,
+            'organization_id': org.id,
+            'organization_name': org.name,
+        }
+    }, status=status.HTTP_201_CREATED)

@@ -36,6 +36,8 @@ urlpatterns = [
     path('positions/<int:pk>/', organization_views.job_position_detail, name='position-detail'),
     path('org-users/', organization_views.users_list_for_org, name='org-users-list'),
     path('org-users/<int:user_id>/assign/', organization_views.assign_user, name='assign-user'),
+    path('org-users/<int:user_id>/role/', organization_views.change_user_role, name='change-user-role'),
+    path('org-users/<int:user_id>/active/', organization_views.set_user_active, name='set-user-active'),
     path('organizations/<int:pk>/assign-admin/', organization_views.assign_org_admin, name='assign-org-admin'),
 
     # App categorization endpoints
